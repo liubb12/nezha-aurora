@@ -18,7 +18,7 @@ const ready = ref(false);
 const failed = ref(false);
 const landPaths = ref<string[]>([]);
 
-/** 缩放与平移状态（纯原生实现，无需额外依赖） */
+/** 缩放与平移状态（原生事件，无额外依赖） */
 const scale = ref(1);
 const translateX = ref(0);
 const translateY = ref(0);
@@ -62,6 +62,12 @@ function resetZoom() {
   scale.value = 1;
   translateX.value = 0;
   translateY.value = 0;
+}
+
+/** 获取国旗图片 URL（解决 Windows 不支持 Emoji 国旗的问题） */
+function getFlagUrl(code: string): string {
+  if (!code) return "";
+  return `https://flagcdn.com/24x18/${code.toLowerCase()}.png`;
 }
 
 /** 国家代码转中文名称 */
@@ -237,27 +243,35 @@ onMounted(async () => {
                 @mousemove="showTooltip(cluster, $event)"
                 @click="showTooltip(cluster, $event)"
               >
+                <!-- 脉冲圈：根据 scale 自适应缩放，防止放大时占满屏幕 -->
                 <circle
                   class="world-map__pulse"
                   :class="cluster.offline ? 'is-offline' : 'is-online'"
                   :cx="cluster.x"
                   :cy="cluster.y"
-                  :r="7"
+                  :r="7 / Math.sqrt(scale)"
                 />
+                <!-- 核心节点圆点 -->
                 <circle
                   class="world-map__dot"
                   :class="cluster.offline ? 'is-offline' : 'is-online'"
                   :cx="cluster.x"
                   :cy="cluster.y"
-                  :r="cluster.entries.length > 1 ? 5.5 : 4.5"
+                  :r="(cluster.entries.length > 1 ? 5.5 : 4) / Math.sqrt(scale)"
+                  :style="{ strokeWidth: `${1.8 / Math.sqrt(scale)}px` }"
                   tabindex="0"
                   @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
                 />
+                <!-- 聚合数字：动态调节字号与位移 -->
                 <text
                   v-if="cluster.entries.length > 1"
                   class="world-map__count"
                   :x="cluster.x"
-                  :y="cluster.y - 11"
+                  :y="cluster.y - (10 / Math.sqrt(scale))"
+                  :style="{
+                    fontSize: `${Math.max(7, 11 / Math.sqrt(scale))}px`,
+                    strokeWidth: `${2 / Math.sqrt(scale)}px`
+                  }"
                 >
                   {{ cluster.entries.length }}
                 </text>
@@ -267,7 +281,7 @@ onMounted(async () => {
         </svg>
       </div>
 
-      <!-- 优化后的双列/全称弹窗 -->
+      <!-- 优化后的弹窗 -->
       <div
         v-if="tooltip"
         class="world-map__tooltip"
@@ -276,7 +290,12 @@ onMounted(async () => {
       >
         <div class="world-map__tooltip-head">
           <div class="head-title">
-            <span class="country-flag">{{ countryFlag(tooltip.cluster.code) }}</span>
+            <img
+              class="country-flag-img"
+              :src="getFlagUrl(tooltip.cluster.code)"
+              :alt="tooltip.cluster.code"
+              @error="($event.target as HTMLElement).style.display = 'none'"
+            />
             <span class="country-name">{{ getCountryName(tooltip.cluster.code) }}</span>
             <span class="country-code">({{ tooltip.cluster.code }})</span>
           </div>
@@ -381,17 +400,11 @@ onMounted(async () => {
 .world-map__dot.is-online {
   fill: var(--ok);
   stroke: color-mix(in srgb, var(--ok) 35%, transparent);
-  stroke-width: 2;
 }
 
 .world-map__dot.is-offline {
   fill: var(--danger);
   stroke: color-mix(in srgb, var(--danger) 35%, transparent);
-  stroke-width: 2;
-}
-
-.world-map__node:hover .world-map__dot {
-  r: 7.5;
 }
 
 .world-map__pulse {
@@ -409,26 +422,21 @@ onMounted(async () => {
 
 .world-map__count {
   fill: var(--text);
-  font-size: 11px;
   font-weight: 700;
   text-anchor: middle;
   paint-order: stroke;
   stroke: var(--bg);
-  stroke-width: 3;
   pointer-events: none;
 }
 
 @keyframes map-pulse {
   0% {
-    r: 5;
     opacity: 0.45;
   }
   70% {
-    r: 14;
     opacity: 0;
   }
   100% {
-    r: 14;
     opacity: 0;
   }
 }
@@ -468,11 +476,17 @@ onMounted(async () => {
 .head-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
-.country-flag {
-  font-size: 16px;
+.country-flag-img {
+  width: 20px;
+  height: 14px;
+  border-radius: 2px;
+  object-fit: cover;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  display: inline-block;
+  flex-shrink: 0;
 }
 
 .country-name {
