@@ -18,7 +18,7 @@ const ready = ref(false);
 const failed = ref(false);
 const landPaths = ref<string[]>([]);
 
-/** 缩放与平移状态（纯原生事件支持，不依赖任何第三方未安装模块） */
+/** 缩放与平移状态 */
 const scale = ref(1);
 const translateX = ref(0);
 const translateY = ref(0);
@@ -64,13 +64,11 @@ function resetZoom() {
   translateY.value = 0;
 }
 
-/** 实体国旗图片回退机制（解决 Windows 平台下 emoji 国旗显示为空白的问题） */
 function getFlagUrl(code: string): string {
   if (!code) return "";
   return `https://flagcdn.com/24x18/${code.toLowerCase()}.png`;
 }
 
-/** 国家代码转中文名称 */
 const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 function getCountryName(code: string): string {
   try {
@@ -82,6 +80,12 @@ function getCountryName(code: string): string {
 
 let project: ((coords: [number, number]) => [number, number] | null) | null = null;
 
+interface ClusterNode {
+  server: PreparedServer;
+  x: number;
+  y: number;
+}
+
 interface Cluster {
   code: string;
   x: number;
@@ -89,8 +93,10 @@ interface Cluster {
   online: number;
   offline: number;
   entries: PreparedServer[];
+  scatteredNodes: ClusterNode[];
 }
 
+/** 计算聚合与展开散点 */
 const clusters = computed<Cluster[]>(() => {
   if (!ready.value || !project) return [];
 
@@ -104,6 +110,9 @@ const clusters = computed<Cluster[]>(() => {
   }
 
   const result: Cluster[] = [];
+  const currentScale = scale.value;
+  const shouldSpread = currentScale > 1.8; // 当放大超过 1.8 倍时展开散点
+
   for (const [code, entries] of grouped) {
     const centroid = centroidOf(code);
     if (!centroid) continue;
@@ -111,13 +120,33 @@ const clusters = computed<Cluster[]>(() => {
     const point = project([lng, lat]);
     if (!point) continue;
 
+    const centerX = Number(point[0].toFixed(2));
+    const centerY = Number(point[1].toFixed(2));
+    const sortedEntries = entries.sort((a, b) => Number(b.online) - Number(a.online));
+
+    // 计算散开节点分布（星环算法）
+    const scatteredNodes: ClusterNode[] = [];
+    if (shouldSpread && sortedEntries.length > 1) {
+      const count = sortedEntries.length;
+      const baseRadius = Math.min(22, 9 + count * 1.5); // 散开半径
+      for (let i = 0; i < count; i++) {
+        const angle = (2 * Math.PI * i) / count;
+        scatteredNodes.push({
+          server: sortedEntries[i],
+          x: centerX + Math.cos(angle) * (baseRadius / Math.sqrt(currentScale)),
+          y: centerY + Math.sin(angle) * (baseRadius / Math.sqrt(currentScale)),
+        });
+      }
+    }
+
     result.push({
       code,
-      x: Number(point[0].toFixed(2)),
-      y: Number(point[1].toFixed(2)),
-      online: entries.filter((item) => item.online).length,
-      offline: entries.filter((item) => !item.online).length,
-      entries: entries.sort((a, b) => Number(b.online) - Number(a.online)),
+      x: centerX,
+      y: centerY,
+      online: sortedEntries.filter((item) => item.online).length,
+      offline: sortedEntries.filter((item) => !item.online).length,
+      entries: sortedEntries,
+      scatteredNodes,
     });
   }
   return result;
@@ -127,20 +156,26 @@ const locatedCount = computed(() =>
   clusters.value.reduce((sum, cluster) => sum + cluster.entries.length, 0),
 );
 
-const tooltip = ref<{ x: number; y: number; cluster: Cluster } | null>(null);
+const tooltip = ref<{
+  x: number;
+  y: number;
+  cluster: Cluster;
+  singleNode?: PreparedServer;
+} | null>(null);
 
-function showTooltip(cluster: Cluster, event: MouseEvent) {
+function showTooltip(cluster: Cluster, event: MouseEvent, singleNode?: PreparedServer) {
   const container = (event.currentTarget as HTMLElement).closest(".world-map");
   if (!container) return;
   const rect = container.getBoundingClientRect();
   let x = event.clientX - rect.left;
   let y = event.clientY - rect.top;
 
-  const popoverWidth = cluster.entries.length > 5 ? 560 : 360;
+  const count = singleNode ? 1 : cluster.entries.length;
+  const popoverWidth = count > 5 ? 560 : 360;
   if (x + popoverWidth > rect.width) {
     x = Math.max(10, rect.width - popoverWidth - 16);
   }
-  tooltip.value = { x, y, cluster };
+  tooltip.value = { x, y, cluster, singleNode };
 }
 
 function hideTooltip() {
@@ -210,6 +245,7 @@ onMounted(async () => {
           <i class="dot dot--offline" /> 离线 {{ items.filter((i) => !i.online).length }}
         </span>
         <span class="chip num">{{ locatedCount }}/{{ items.length }} 个节点可定位</span>
+        <span class="chip hint">滚轮缩放地图，放大后自动散开节点</span>
         <button v-if="scale > 1" type="button" class="chip reset-btn" @click="resetZoom">
           重置视角
         </button>
@@ -235,57 +271,93 @@ onMounted(async () => {
             </g>
 
             <g class="world-map__nodes">
-              <g
-                v-for="cluster in clusters"
-                :key="cluster.code"
-                class="world-map__node"
-                @mouseenter="showTooltip(cluster, $event)"
-                @mousemove="showTooltip(cluster, $event)"
-                @click="showTooltip(cluster, $event)"
-              >
-                <!-- 脉冲圈：随 scale 进行反向缩放 -->
-                <circle
-                  class="world-map__pulse"
-                  :class="cluster.offline ? 'is-offline' : 'is-online'"
-                  :cx="cluster.x"
-                  :cy="cluster.y"
-                  :r="7 / Math.sqrt(scale)"
-                />
-                <!-- 核心节点圆点：保持屏幕显示尺寸恒定 -->
-                <circle
-                  class="world-map__dot"
-                  :class="cluster.offline ? 'is-offline' : 'is-online'"
-                  :cx="cluster.x"
-                  :cy="cluster.y"
-                  :r="(cluster.entries.length > 1 ? 5.5 : 4) / Math.sqrt(scale)"
-                  :style="{ strokeWidth: `${1.8 / Math.sqrt(scale)}px` }"
-                  tabindex="0"
-                  @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
-                />
-                <!-- 聚合数字：随缩放自适应字号与位置 -->
-                <text
-                  v-if="cluster.entries.length > 1"
-                  class="world-map__count"
-                  :x="cluster.x"
-                  :y="cluster.y - (10 / Math.sqrt(scale))"
-                  :style="{
-                    fontSize: `${Math.max(7, 11 / Math.sqrt(scale))}px`,
-                    strokeWidth: `${2 / Math.sqrt(scale)}px`
-                  }"
-                >
-                  {{ cluster.entries.length }}
-                </text>
+              <g v-for="cluster in clusters" :key="cluster.code" class="world-map__cluster">
+                <!-- 状态 A：放大后散开显示的独立节点 -->
+                <template v-if="cluster.scatteredNodes.length > 0">
+                  <g
+                    v-for="node in cluster.scatteredNodes"
+                    :key="node.server.server.id"
+                    class="world-map__node"
+                    @mouseenter="showTooltip(cluster, $event, node.server)"
+                    @mousemove="showTooltip(cluster, $event, node.server)"
+                    @click.stop="openServer(node.server.server.id)"
+                  >
+                    <circle
+                      class="node-glow"
+                      :class="node.server.online ? 'is-online' : 'is-offline'"
+                      :cx="node.x"
+                      :cy="node.y"
+                      :r="5 / Math.sqrt(scale)"
+                    />
+                    <circle
+                      class="node-core"
+                      :class="node.server.online ? 'is-online' : 'is-offline'"
+                      :cx="node.x"
+                      :cy="node.y"
+                      :r="2.8 / Math.sqrt(scale)"
+                      :style="{ strokeWidth: `${1 / Math.sqrt(scale)}px` }"
+                    />
+                  </g>
+                </template>
+
+                <!-- 状态 B：全局概览时的精致微光聚合点 -->
+                <template v-else>
+                  <g
+                    class="world-map__node"
+                    @mouseenter="showTooltip(cluster, $event)"
+                    @mousemove="showTooltip(cluster, $event)"
+                    @click="showTooltip(cluster, $event)"
+                  >
+                    <!-- 外呼吸光晕 -->
+                    <circle
+                      class="world-map__pulse"
+                      :class="cluster.offline ? 'has-offline' : 'all-online'"
+                      :cx="cluster.x"
+                      :cy="cluster.y"
+                      :r="6.5 / Math.sqrt(scale)"
+                    />
+                    <!-- 中心实体发光点 -->
+                    <circle
+                      class="world-map__dot"
+                      :class="cluster.offline ? 'has-offline' : 'all-online'"
+                      :cx="cluster.x"
+                      :cy="cluster.y"
+                      :r="3.8 / Math.sqrt(scale)"
+                      :style="{ strokeWidth: `${1.2 / Math.sqrt(scale)}px` }"
+                    />
+                    <!-- 精致右上微型角标（不再压在正中） -->
+                    <g
+                      v-if="cluster.entries.length > 1"
+                      :transform="`translate(${cluster.x + 5 / Math.sqrt(scale)}, ${cluster.y - 5 / Math.sqrt(scale)})`"
+                    >
+                      <circle
+                        class="badge-bg"
+                        :r="4.2 / Math.sqrt(scale)"
+                      />
+                      <text
+                        class="badge-text"
+                        :style="{
+                          fontSize: `${Math.max(5.5, 6.8 / Math.sqrt(scale))}px`
+                        }"
+                        text-anchor="middle"
+                        dominant-baseline="central"
+                      >
+                        {{ cluster.entries.length }}
+                      </text>
+                    </g>
+                  </g>
+                </template>
               </g>
             </g>
           </g>
         </svg>
       </div>
 
-      <!-- 优化后的双列/全称弹窗 -->
+      <!-- 精致浮动面板 -->
       <div
         v-if="tooltip"
         class="world-map__tooltip"
-        :class="{ 'is-multi-col': tooltip.cluster.entries.length > 5 }"
+        :class="{ 'is-multi-col': !tooltip.singleNode && tooltip.cluster.entries.length > 5 }"
         :style="{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }"
       >
         <div class="world-map__tooltip-head">
@@ -300,13 +372,18 @@ onMounted(async () => {
             <span class="country-code">({{ tooltip.cluster.code }})</span>
           </div>
           <span class="world-map__tooltip-stat">
-            在线 {{ tooltip.cluster.online }} / 离线 {{ tooltip.cluster.offline }}
+            <template v-if="tooltip.singleNode">
+              节点详情
+            </template>
+            <template v-else>
+              在线 {{ tooltip.cluster.online }} / 离线 {{ tooltip.cluster.offline }}
+            </template>
           </span>
         </div>
 
         <div class="world-map__tooltip-body">
           <button
-            v-for="entry in tooltip.cluster.entries"
+            v-for="entry in (tooltip.singleNode ? [tooltip.singleNode] : tooltip.cluster.entries)"
             :key="entry.server.id"
             type="button"
             class="world-map__tooltip-item"
@@ -332,8 +409,8 @@ onMounted(async () => {
 .world-map {
   position: relative;
   padding: 14px;
-  --map-land: rgba(148, 178, 255, 0.09);
-  --map-stroke: rgba(148, 178, 255, 0.2);
+  --map-land: rgba(148, 178, 255, 0.08);
+  --map-stroke: rgba(148, 178, 255, 0.18);
 }
 
 :global([data-theme="light"]) .world-map {
@@ -382,6 +459,11 @@ onMounted(async () => {
   align-items: center;
 }
 
+.world-map__legend .hint {
+  font-size: 11.5px;
+  opacity: 0.6;
+}
+
 .reset-btn {
   cursor: pointer;
   background: var(--accent-soft);
@@ -393,65 +475,90 @@ onMounted(async () => {
   cursor: pointer;
 }
 
-.world-map__dot {
-  transition: r 0.15s ease;
+/* 核心圆点样式 */
+.world-map__dot.all-online {
+  fill: #10b981;
+  stroke: rgba(16, 185, 129, 0.4);
 }
 
-.world-map__dot.is-online {
-  fill: var(--ok);
-  stroke: color-mix(in srgb, var(--ok) 35%, transparent);
-}
-
-.world-map__dot.is-offline {
-  fill: var(--danger);
-  stroke: color-mix(in srgb, var(--danger) 35%, transparent);
+.world-map__dot.has-offline {
+  fill: #ef4444;
+  stroke: rgba(239, 68, 68, 0.4);
 }
 
 .world-map__pulse {
-  opacity: 0.3;
+  opacity: 0.35;
 }
 
-.world-map__pulse.is-online {
-  fill: var(--ok);
-  animation: map-pulse 2.2s ease-out infinite;
+.world-map__pulse.all-online {
+  fill: #10b981;
+  animation: map-pulse 2.2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
 }
 
-.world-map__pulse.is-offline {
-  fill: transparent;
+.world-map__pulse.has-offline {
+  fill: #ef4444;
+  animation: map-pulse 2.2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
 }
 
-.world-map__count {
-  fill: var(--text);
+/* 散开独立小节点 */
+.node-core.is-online {
+  fill: #10b981;
+  stroke: #059669;
+}
+
+.node-core.is-offline {
+  fill: #ef4444;
+  stroke: #dc2626;
+}
+
+.node-glow.is-online {
+  fill: rgba(16, 185, 129, 0.25);
+}
+
+.node-glow.is-offline {
+  fill: rgba(239, 68, 68, 0.25);
+}
+
+/* 右上方极小数字角标 */
+.badge-bg {
+  fill: #1e293b;
+  stroke: #334155;
+  stroke-width: 0.5;
+}
+
+.badge-text {
+  fill: #f8fafc;
   font-weight: 700;
-  text-anchor: middle;
-  paint-order: stroke;
-  stroke: var(--bg);
-  pointer-events: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 @keyframes map-pulse {
   0% {
+    transform: scale(0.9);
     opacity: 0.45;
   }
   70% {
+    transform: scale(1.6);
     opacity: 0;
   }
   100% {
+    transform: scale(1.6);
     opacity: 0;
   }
 }
 
+/* 弹窗面板 */
 .world-map__tooltip {
   position: absolute;
   z-index: 50;
-  min-width: 320px;
+  min-width: 330px;
   max-width: 420px;
   transform: translate(12px, 12px);
   padding: 12px 14px;
-  border-radius: var(--radius-md, 10px);
+  border-radius: 10px;
   border: 1px solid var(--border-strong);
   background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
-  box-shadow: var(--shadow-pop);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(14px);
   pointer-events: auto;
 }
