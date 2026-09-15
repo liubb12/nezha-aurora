@@ -17,12 +17,54 @@ const HEIGHT = 500;
 const ready = ref(false);
 const failed = ref(false);
 const landPaths = ref<string[]>([]);
-const svgRef = ref<SVGSVGElement | null>(null);
 
-/** 地图缩放平移 transform 状态 */
-const mapTransform = ref("");
+/** 缩放与平移状态（纯原生实现，无需额外依赖） */
+const scale = ref(1);
+const translateX = ref(0);
+const translateY = ref(0);
+const isDragging = ref(false);
+const startX = ref(0);
+const startY = ref(0);
 
-/** 国家代码转中文名 */
+const mapTransform = computed(() => {
+  return `translate(${translateX.value}, ${translateY.value}) scale(${scale.value})`;
+});
+
+function onWheel(e: WheelEvent) {
+  e.preventDefault();
+  const zoomFactor = e.deltaY < 0 ? 1.2 : 0.8;
+  const newScale = Math.min(Math.max(scale.value * zoomFactor, 1), 8);
+  scale.value = Number(newScale.toFixed(2));
+  if (scale.value === 1) {
+    translateX.value = 0;
+    translateY.value = 0;
+  }
+}
+
+function onMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return;
+  isDragging.value = true;
+  startX.value = e.clientX - translateX.value;
+  startY.value = e.clientY - translateY.value;
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (!isDragging.value) return;
+  translateX.value = e.clientX - startX.value;
+  translateY.value = e.clientY - startY.value;
+}
+
+function onMouseUp() {
+  isDragging.value = false;
+}
+
+function resetZoom() {
+  scale.value = 1;
+  translateX.value = 0;
+  translateY.value = 0;
+}
+
+/** 国家代码转中文名称 */
 const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 function getCountryName(code: string): string {
   try {
@@ -32,7 +74,6 @@ function getCountryName(code: string): string {
   }
 }
 
-/** 投影函数不放入响应式系统 */
 let project: ((coords: [number, number]) => [number, number] | null) | null = null;
 
 interface Cluster {
@@ -86,14 +127,12 @@ function showTooltip(cluster: Cluster, event: MouseEvent) {
   const container = (event.currentTarget as HTMLElement).closest(".world-map");
   if (!container) return;
   const rect = container.getBoundingClientRect();
-  // 计算相对于容器的真实坐标，避免拖拽后浮窗漂移
   let x = event.clientX - rect.left;
   let y = event.clientY - rect.top;
 
-  // 边缘自适应，防止弹窗溢出右侧和底部
-  const popoverWidth = cluster.entries.length > 5 ? 580 : 380;
+  const popoverWidth = cluster.entries.length > 5 ? 560 : 360;
   if (x + popoverWidth > rect.width) {
-    x = rect.width - popoverWidth - 16;
+    x = Math.max(10, rect.width - popoverWidth - 16);
   }
   tooltip.value = { x, y, cluster };
 }
@@ -108,9 +147,8 @@ function openServer(id: number) {
 
 onMounted(async () => {
   try {
-    const [d3, d3Zoom, topojson, atlasModule] = await Promise.all([
+    const [d3, topojson, atlasModule] = await Promise.all([
       import("d3-geo"),
-      import("d3-zoom"),
       import("topojson-client"),
       import("world-atlas/countries-110m.json"),
     ]);
@@ -142,22 +180,6 @@ onMounted(async () => {
       return point ? [point[0], point[1]] : null;
     };
     ready.value = true;
-
-    // 绑定 D3 鼠标滚轮缩放与鼠标拖拽
-    if (svgRef.value) {
-      const zoom = d3Zoom
-        .zoom<SVGSVGElement, unknown>()
-        .scaleExtent([1, 8]) // 支持放大 1x 到 8x
-        .translateExtent([
-          [-100, -100],
-          [WIDTH + 100, HEIGHT + 100],
-        ])
-        .on("zoom", (event) => {
-          mapTransform.value = event.transform.toString();
-        });
-
-      d3.select(svgRef.value).call(zoom as never);
-    }
   } catch (error) {
     failed.value = true;
     console.error("[Aurora] 世界地图加载失败", error);
@@ -182,62 +204,70 @@ onMounted(async () => {
           <i class="dot dot--offline" /> 离线 {{ items.filter((i) => !i.online).length }}
         </span>
         <span class="chip num">{{ locatedCount }}/{{ items.length }} 个节点可定位</span>
-        <span class="chip hint">可使用滚轮缩放与鼠标拖拽</span>
+        <button v-if="scale > 1" type="button" class="chip reset-btn" @click="resetZoom">
+          重置视角
+        </button>
       </div>
 
-      <svg
-        ref="svgRef"
-        :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
-        preserveAspectRatio="xMidYMid meet"
-        role="img"
-        aria-label="节点世界分布"
-        class="world-map__svg"
+      <div
+        class="world-map__viewport"
+        @wheel="onWheel"
+        @mousedown="onMouseDown"
+        @mousemove="onMouseMove"
+        @mouseup="onMouseUp"
+        @mouseleave="onMouseUp"
       >
-        <g :transform="mapTransform">
-          <g class="world-map__land">
-            <path v-for="(path, index) in landPaths" :key="index" :d="path" />
-          </g>
+        <svg
+          :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label="节点世界分布"
+        >
+          <g :transform="mapTransform">
+            <g class="world-map__land">
+              <path v-for="(path, index) in landPaths" :key="index" :d="path" />
+            </g>
 
-          <g class="world-map__nodes">
-            <g
-              v-for="cluster in clusters"
-              :key="cluster.code"
-              class="world-map__node"
-              @mouseenter="showTooltip(cluster, $event)"
-              @mousemove="showTooltip(cluster, $event)"
-              @click="showTooltip(cluster, $event)"
-            >
-              <circle
-                class="world-map__pulse"
-                :class="cluster.offline ? 'is-offline' : 'is-online'"
-                :cx="cluster.x"
-                :cy="cluster.y"
-                :r="7"
-              />
-              <circle
-                class="world-map__dot"
-                :class="cluster.offline ? 'is-offline' : 'is-online'"
-                :cx="cluster.x"
-                :cy="cluster.y"
-                :r="cluster.entries.length > 1 ? 6 : 4.5"
-                tabindex="0"
-                @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
-              />
-              <text
-                v-if="cluster.entries.length > 1"
-                class="world-map__count"
-                :cx="cluster.x"
-                :x="cluster.x"
-                :y="cluster.y - 10"
+            <g class="world-map__nodes">
+              <g
+                v-for="cluster in clusters"
+                :key="cluster.code"
+                class="world-map__node"
+                @mouseenter="showTooltip(cluster, $event)"
+                @mousemove="showTooltip(cluster, $event)"
+                @click="showTooltip(cluster, $event)"
               >
-                {{ cluster.entries.length }}
-              </text>
+                <circle
+                  class="world-map__pulse"
+                  :class="cluster.offline ? 'is-offline' : 'is-online'"
+                  :cx="cluster.x"
+                  :cy="cluster.y"
+                  :r="7"
+                />
+                <circle
+                  class="world-map__dot"
+                  :class="cluster.offline ? 'is-offline' : 'is-online'"
+                  :cx="cluster.x"
+                  :cy="cluster.y"
+                  :r="cluster.entries.length > 1 ? 5.5 : 4.5"
+                  tabindex="0"
+                  @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
+                />
+                <text
+                  v-if="cluster.entries.length > 1"
+                  class="world-map__count"
+                  :x="cluster.x"
+                  :y="cluster.y - 11"
+                >
+                  {{ cluster.entries.length }}
+                </text>
+              </g>
             </g>
           </g>
-        </g>
-      </svg>
+        </svg>
+      </div>
 
-      <!-- 优化后的浮层面板 -->
+      <!-- 优化后的双列/全称弹窗 -->
       <div
         v-if="tooltip"
         class="world-map__tooltip"
@@ -292,15 +322,20 @@ onMounted(async () => {
   --map-stroke: #c6d4e8;
 }
 
-.world-map__svg {
+.world-map__viewport {
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+}
+
+.world-map__viewport:active {
+  cursor: grabbing;
+}
+
+.world-map svg {
   width: 100%;
   height: auto;
   display: block;
-  cursor: grab;
-}
-
-.world-map__svg:active {
-  cursor: grabbing;
 }
 
 .world-map__land path {
@@ -328,9 +363,11 @@ onMounted(async () => {
   align-items: center;
 }
 
-.world-map__legend .hint {
-  font-size: 11px;
-  opacity: 0.6;
+.reset-btn {
+  cursor: pointer;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 
 .world-map__node {
@@ -354,7 +391,7 @@ onMounted(async () => {
 }
 
 .world-map__node:hover .world-map__dot {
-  r: 8;
+  r: 7.5;
 }
 
 .world-map__pulse {
@@ -387,42 +424,41 @@ onMounted(async () => {
     opacity: 0.45;
   }
   70% {
-    r: 15;
+    r: 14;
     opacity: 0;
   }
   100% {
-    r: 15;
+    r: 14;
     opacity: 0;
   }
 }
 
-/* 升级后的弹窗布局 */
 .world-map__tooltip {
   position: absolute;
   z-index: 50;
-  min-width: 350px;
+  min-width: 320px;
   max-width: 420px;
   transform: translate(12px, 12px);
   padding: 12px 14px;
-  border-radius: var(--radius-lg, 12px);
+  border-radius: var(--radius-md, 10px);
   border: 1px solid var(--border-strong);
-  background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(16px);
+  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: blur(14px);
   pointer-events: auto;
 }
 
 .world-map__tooltip.is-multi-col {
-  min-width: 560px;
-  max-width: 650px;
+  min-width: 520px;
+  max-width: 620px;
 }
 
 .world-map__tooltip-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 13.5px;
+  gap: 10px;
+  font-size: 13px;
   font-weight: 650;
   padding-bottom: 8px;
   margin-bottom: 8px;
@@ -472,25 +508,23 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
   padding: 6px 8px;
-  border-radius: 8px;
+  border-radius: 7px;
   text-align: left;
   background: rgba(255, 255, 255, 0.02);
-  border: 1px solid transparent;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 .world-map__tooltip-item:hover {
   background: var(--accent-soft);
-  border-color: var(--border);
 }
 
 .item-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: 1;
   min-width: 0;
 }
