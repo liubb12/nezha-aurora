@@ -17,8 +17,22 @@ const HEIGHT = 500;
 const ready = ref(false);
 const failed = ref(false);
 const landPaths = ref<string[]>([]);
+const svgRef = ref<SVGSVGElement | null>(null);
 
-/** 投影函数不放入响应式系统，避免深层代理带来的性能损失 */
+/** 地图缩放平移 transform 状态 */
+const mapTransform = ref("");
+
+/** 国家代码转中文名 */
+const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
+function getCountryName(code: string): string {
+  try {
+    return regionNames.of(code.toUpperCase()) || code;
+  } catch {
+    return code;
+  }
+}
+
+/** 投影函数不放入响应式系统 */
 let project: ((coords: [number, number]) => [number, number] | null) | null = null;
 
 interface Cluster {
@@ -69,7 +83,19 @@ const locatedCount = computed(() =>
 const tooltip = ref<{ x: number; y: number; cluster: Cluster } | null>(null);
 
 function showTooltip(cluster: Cluster, event: MouseEvent) {
-  tooltip.value = { x: event.offsetX, y: event.offsetY, cluster };
+  const container = (event.currentTarget as HTMLElement).closest(".world-map");
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  // 计算相对于容器的真实坐标，避免拖拽后浮窗漂移
+  let x = event.clientX - rect.left;
+  let y = event.clientY - rect.top;
+
+  // 边缘自适应，防止弹窗溢出右侧和底部
+  const popoverWidth = cluster.entries.length > 5 ? 580 : 380;
+  if (x + popoverWidth > rect.width) {
+    x = rect.width - popoverWidth - 16;
+  }
+  tooltip.value = { x, y, cluster };
 }
 
 function hideTooltip() {
@@ -82,8 +108,9 @@ function openServer(id: number) {
 
 onMounted(async () => {
   try {
-    const [d3, topojson, atlasModule] = await Promise.all([
+    const [d3, d3Zoom, topojson, atlasModule] = await Promise.all([
       import("d3-geo"),
+      import("d3-zoom"),
       import("topojson-client"),
       import("world-atlas/countries-110m.json"),
     ]);
@@ -115,6 +142,22 @@ onMounted(async () => {
       return point ? [point[0], point[1]] : null;
     };
     ready.value = true;
+
+    // 绑定 D3 鼠标滚轮缩放与鼠标拖拽
+    if (svgRef.value) {
+      const zoom = d3Zoom
+        .zoom<SVGSVGElement, unknown>()
+        .scaleExtent([1, 8]) // 支持放大 1x 到 8x
+        .translateExtent([
+          [-100, -100],
+          [WIDTH + 100, HEIGHT + 100],
+        ])
+        .on("zoom", (event) => {
+          mapTransform.value = event.transform.toString();
+        });
+
+      d3.select(svgRef.value).call(zoom as never);
+    }
   } catch (error) {
     failed.value = true;
     console.error("[Aurora] 世界地图加载失败", error);
@@ -123,7 +166,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="world-map panel">
+  <div class="world-map panel" @mouseleave="hideTooltip">
     <div v-if="failed" class="world-map__state">地图资源加载失败，请检查网络或改用本地依赖。</div>
     <div v-else-if="!ready" class="world-map__state">
       <span class="spinner" />
@@ -139,78 +182,98 @@ onMounted(async () => {
           <i class="dot dot--offline" /> 离线 {{ items.filter((i) => !i.online).length }}
         </span>
         <span class="chip num">{{ locatedCount }}/{{ items.length }} 个节点可定位</span>
+        <span class="chip hint">可使用滚轮缩放与鼠标拖拽</span>
       </div>
 
-      <svg :viewBox="`0 0 ${WIDTH} ${HEIGHT}`" preserveAspectRatio="xMidYMid meet" role="img" aria-label="节点世界分布">
-        <g class="world-map__land">
-          <path v-for="(path, index) in landPaths" :key="index" :d="path" />
-        </g>
+      <svg
+        ref="svgRef"
+        :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="节点世界分布"
+        class="world-map__svg"
+      >
+        <g :transform="mapTransform">
+          <g class="world-map__land">
+            <path v-for="(path, index) in landPaths" :key="index" :d="path" />
+          </g>
 
-        <g class="world-map__nodes">
-          <g
-            v-for="cluster in clusters"
-            :key="cluster.code"
-            class="world-map__node"
-            @mouseenter="showTooltip(cluster, $event)"
-            @mousemove="showTooltip(cluster, $event)"
-            @mouseleave="hideTooltip"
-          >
-            <circle
-              class="world-map__pulse"
-              :class="cluster.offline ? 'is-offline' : 'is-online'"
-              :cx="cluster.x"
-              :cy="cluster.y"
-              :r="7"
-            />
-            <circle
-              class="world-map__dot"
-              :class="cluster.offline ? 'is-offline' : 'is-online'"
-              :cx="cluster.x"
-              :cy="cluster.y"
-              :r="cluster.entries.length > 1 ? 5.5 : 4.5"
-              tabindex="0"
-              @click="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
-            />
-            <text
-              v-if="cluster.entries.length > 1"
-              class="world-map__count"
-              :x="cluster.x"
-              :y="cluster.y - 11"
+          <g class="world-map__nodes">
+            <g
+              v-for="cluster in clusters"
+              :key="cluster.code"
+              class="world-map__node"
+              @mouseenter="showTooltip(cluster, $event)"
+              @mousemove="showTooltip(cluster, $event)"
+              @click="showTooltip(cluster, $event)"
             >
-              {{ cluster.entries.length }}
-            </text>
+              <circle
+                class="world-map__pulse"
+                :class="cluster.offline ? 'is-offline' : 'is-online'"
+                :cx="cluster.x"
+                :cy="cluster.y"
+                :r="7"
+              />
+              <circle
+                class="world-map__dot"
+                :class="cluster.offline ? 'is-offline' : 'is-online'"
+                :cx="cluster.x"
+                :cy="cluster.y"
+                :r="cluster.entries.length > 1 ? 6 : 4.5"
+                tabindex="0"
+                @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
+              />
+              <text
+                v-if="cluster.entries.length > 1"
+                class="world-map__count"
+                :cx="cluster.x"
+                :x="cluster.x"
+                :y="cluster.y - 10"
+              >
+                {{ cluster.entries.length }}
+              </text>
+            </g>
           </g>
         </g>
       </svg>
 
+      <!-- 优化后的浮层面板 -->
       <div
         v-if="tooltip"
         class="world-map__tooltip"
+        :class="{ 'is-multi-col': tooltip.cluster.entries.length > 5 }"
         :style="{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }"
       >
         <div class="world-map__tooltip-head">
-          {{ countryFlag(tooltip.cluster.code) }} {{ tooltip.cluster.code }}
+          <div class="head-title">
+            <span class="country-flag">{{ countryFlag(tooltip.cluster.code) }}</span>
+            <span class="country-name">{{ getCountryName(tooltip.cluster.code) }}</span>
+            <span class="country-code">({{ tooltip.cluster.code }})</span>
+          </div>
           <span class="world-map__tooltip-stat">
             在线 {{ tooltip.cluster.online }} / 离线 {{ tooltip.cluster.offline }}
           </span>
         </div>
-        <button
-          v-for="entry in tooltip.cluster.entries"
-          :key="entry.server.id"
-          type="button"
-          class="world-map__tooltip-item"
-          @click="openServer(entry.server.id)"
-        >
-          <i class="dot" :class="entry.online ? 'dot--online' : 'dot--offline'" />
-          <span class="world-map__tooltip-name">{{ entry.server.name }}</span>
-          <span class="world-map__tooltip-meta num">
-            CPU {{ (entry.server.state?.cpu || 0).toFixed(0) }}% ·
-            内存 {{ percent(entry.server.state?.mem_used, entry.server.host?.mem_total).toFixed(0) }}%
-            <template v-if="entry.online">
-              · ↓{{ formatSpeed(entry.server.state?.net_in_speed, 1) }}
-            </template>
-          </span>
-        </button>
+
+        <div class="world-map__tooltip-body">
+          <button
+            v-for="entry in tooltip.cluster.entries"
+            :key="entry.server.id"
+            type="button"
+            class="world-map__tooltip-item"
+            @click="openServer(entry.server.id)"
+          >
+            <div class="item-left">
+              <i class="dot" :class="entry.online ? 'dot--online' : 'dot--offline'" />
+              <span class="world-map__tooltip-name" :title="entry.server.name">{{ entry.server.name }}</span>
+            </div>
+            <div class="world-map__tooltip-meta num">
+              <span>CPU {{ (entry.server.state?.cpu || 0).toFixed(0) }}%</span>
+              <span>MEM {{ percent(entry.server.state?.mem_used, entry.server.host?.mem_total).toFixed(0) }}%</span>
+              <span v-if="entry.online" class="speed">↓{{ formatSpeed(entry.server.state?.net_in_speed, 1) }}</span>
+            </div>
+          </button>
+        </div>
       </div>
     </template>
   </div>
@@ -229,11 +292,15 @@ onMounted(async () => {
   --map-stroke: #c6d4e8;
 }
 
-.world-map svg {
+.world-map__svg {
   width: 100%;
   height: auto;
   display: block;
-  overflow: visible;
+  cursor: grab;
+}
+
+.world-map__svg:active {
+  cursor: grabbing;
 }
 
 .world-map__land path {
@@ -258,6 +325,12 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+  align-items: center;
+}
+
+.world-map__legend .hint {
+  font-size: 11px;
+  opacity: 0.6;
 }
 
 .world-map__node {
@@ -281,7 +354,7 @@ onMounted(async () => {
 }
 
 .world-map__node:hover .world-map__dot {
-  r: 7;
+  r: 8;
 }
 
 .world-map__pulse {
@@ -314,61 +387,112 @@ onMounted(async () => {
     opacity: 0.45;
   }
   70% {
-    r: 14;
+    r: 15;
     opacity: 0;
   }
   100% {
-    r: 14;
+    r: 15;
     opacity: 0;
   }
 }
 
+/* 升级后的弹窗布局 */
 .world-map__tooltip {
   position: absolute;
-  z-index: 20;
-  min-width: 210px;
-  max-width: 320px;
+  z-index: 50;
+  min-width: 350px;
+  max-width: 420px;
   transform: translate(12px, 12px);
-  padding: 9px 10px;
-  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  border-radius: var(--radius-lg, 12px);
   border: 1px solid var(--border-strong);
-  background: color-mix(in srgb, var(--panel-solid) 94%, transparent);
-  box-shadow: var(--shadow-pop);
-  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
   pointer-events: auto;
+}
+
+.world-map__tooltip.is-multi-col {
+  min-width: 560px;
+  max-width: 650px;
 }
 
 .world-map__tooltip-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  font-size: 12px;
+  gap: 12px;
+  font-size: 13.5px;
   font-weight: 650;
-  padding-bottom: 6px;
-  margin-bottom: 6px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
 
-.world-map__tooltip-stat {
+.head-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.country-flag {
+  font-size: 16px;
+}
+
+.country-name {
+  color: var(--text);
+}
+
+.country-code {
   font-size: 11px;
+  color: var(--text-faint);
+}
+
+.world-map__tooltip-stat {
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-faint);
+}
+
+.world-map__tooltip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.world-map__tooltip.is-multi-col .world-map__tooltip-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
 }
 
 .world-map__tooltip-item {
   display: flex;
   align-items: center;
-  gap: 7px;
+  justify-content: space-between;
+  gap: 10px;
   width: 100%;
-  padding: 5px 6px;
-  border-radius: 7px;
+  padding: 6px 8px;
+  border-radius: 8px;
   text-align: left;
-  transition: background 0.15s ease;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
 }
 
 .world-map__tooltip-item:hover {
   background: var(--accent-soft);
+  border-color: var(--border);
+}
+
+.item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
 }
 
 .world-map__tooltip-name {
@@ -380,9 +504,15 @@ onMounted(async () => {
 }
 
 .world-map__tooltip-meta {
-  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   color: var(--text-faint);
   white-space: nowrap;
+}
+
+.world-map__tooltip-meta .speed {
+  color: var(--ok);
 }
 </style>
