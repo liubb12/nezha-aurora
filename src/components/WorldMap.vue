@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import type { PreparedServer } from "@/store/nezha";
-import { countryFlag, formatSpeed, percent } from "@/utils/format";
+import { formatSpeed, percent } from "@/utils/format";
 import { centroidOf } from "@/utils/country-centroids";
 
 const props = defineProps<{
@@ -18,7 +18,7 @@ const ready = ref(false);
 const failed = ref(false);
 const landPaths = ref<string[]>([]);
 
-/** 缩放与平移状态（原生事件，无额外依赖） */
+/** 缩放与平移状态（纯原生事件支持，不依赖任何第三方未安装模块） */
 const scale = ref(1);
 const translateX = ref(0);
 const translateY = ref(0);
@@ -64,7 +64,7 @@ function resetZoom() {
   translateY.value = 0;
 }
 
-/** 获取国旗图片 URL（解决 Windows 不支持 Emoji 国旗的问题） */
+/** 实体国旗图片回退机制（解决 Windows 平台下 emoji 国旗显示为空白的问题） */
 function getFlagUrl(code: string): string {
   if (!code) return "";
   return `https://flagcdn.com/24x18/${code.toLowerCase()}.png`;
@@ -243,7 +243,7 @@ onMounted(async () => {
                 @mousemove="showTooltip(cluster, $event)"
                 @click="showTooltip(cluster, $event)"
               >
-                <!-- 脉冲圈：根据 scale 自适应缩放，防止放大时占满屏幕 -->
+                <!-- 脉冲圈：随 scale 进行反向缩放 -->
                 <circle
                   class="world-map__pulse"
                   :class="cluster.offline ? 'is-offline' : 'is-online'"
@@ -251,7 +251,7 @@ onMounted(async () => {
                   :cy="cluster.y"
                   :r="7 / Math.sqrt(scale)"
                 />
-                <!-- 核心节点圆点 -->
+                <!-- 核心节点圆点：保持屏幕显示尺寸恒定 -->
                 <circle
                   class="world-map__dot"
                   :class="cluster.offline ? 'is-offline' : 'is-online'"
@@ -262,7 +262,7 @@ onMounted(async () => {
                   tabindex="0"
                   @click.stop="cluster.entries.length === 1 && openServer(cluster.entries[0].server.id)"
                 />
-                <!-- 聚合数字：动态调节字号与位移 -->
+                <!-- 聚合数字：随缩放自适应字号与位置 -->
                 <text
                   v-if="cluster.entries.length > 1"
                   class="world-map__count"
@@ -281,7 +281,7 @@ onMounted(async () => {
         </svg>
       </div>
 
-      <!-- 优化后的弹窗 -->
+      <!-- 优化后的双列/全称弹窗 -->
       <div
         v-if="tooltip"
         class="world-map__tooltip"
