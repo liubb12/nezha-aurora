@@ -11,12 +11,23 @@ const props = defineProps<{
 
 const router = useRouter();
 
-const WIDTH = 960;
-const HEIGHT = 580;
-const BASE_RADIUS = 220;
+const containerRef = ref<HTMLElement | null>(null);
+const width = ref(360);
+const height = ref(420);
 
 const ready = ref(false);
 const failed = ref(false);
+
+/** 动态计算当前是否处于移动端窄屏 */
+const isMobile = computed(() => width.value < 640);
+
+/** 动态球体半径：移动端与桌面端自适应 */
+const baseRadius = computed(() => {
+  if (isMobile.value) {
+    return Math.min(width.value * 0.42, height.value * 0.42);
+  }
+  return Math.min(width.value * 0.36, height.value * 0.42);
+});
 
 /** 缩放与旋转参数 */
 const zoom = ref(1);
@@ -27,6 +38,7 @@ const startY = ref(0);
 const startRot = ref<[number, number]>([-105, -30]);
 const isHovering = ref(false);
 let autoRotateTimer: number | null = null;
+let resizeObserver: ResizeObserver | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let d3Geo: any = null;
@@ -40,27 +52,27 @@ const projection = computed(() => {
   if (!d3Geo) return null;
   return d3Geo
     .geoOrthographic()
-    .scale(BASE_RADIUS * zoom.value)
-    .translate([WIDTH / 2, HEIGHT / 2])
+    .scale(baseRadius.value * zoom.value)
+    .translate([width.value / 2, height.value / 2])
     .clipAngle(90)
     .rotate(rotation.value);
 });
 
-/** 动态计算大陆轮廓 Path */
+/** 陆地 Path */
 const currentLandPath = computed(() => {
   if (!projection.value || !rawGeoFeatures || !d3Geo) return "";
   const pathGenerator = d3Geo.geoPath(projection.value);
   return pathGenerator(rawGeoFeatures) || "";
 });
 
-/** 动态计算经纬度网格线 Path */
+/** 经纬度网格线 Path */
 const currentGraticulePath = computed(() => {
   if (!projection.value || !graticuleGenerator || !d3Geo) return "";
   const pathGenerator = d3Geo.geoPath(projection.value);
   return pathGenerator(graticuleGenerator()) || "";
 });
 
-/** 常驻地理背景底图文字 */
+/** 常驻地理底图 */
 const BASE_GEO_LABELS = [
   { name: "中国", lng: 104.1954, lat: 35.8617, code: "CN" },
   { name: "俄罗斯", lng: 105.3188, lat: 61.524, code: "RU" },
@@ -120,16 +132,15 @@ interface ArcLine {
   color: string;
 }
 
-/** 炫彩流光配色表 */
 const COLOR_PALETTE = [
-  "#38bdf8", // 荧光青蓝
-  "#f97316", // 珊瑚亮橙
-  "#a855f7", // 霓虹亮紫
-  "#10b981", // 薄荷翠绿
-  "#fbbf24", // 琥珀金黄
-  "#f43f5e", // 鲜艳玫红
-  "#06b6d4", // 极光碧青
-  "#e879f9", // 炫动亮粉
+  "#38bdf8",
+  "#f97316",
+  "#a855f7",
+  "#10b981",
+  "#fbbf24",
+  "#f43f5e",
+  "#06b6d4",
+  "#e879f9",
 ];
 
 const activeCountryCodes = computed(() => {
@@ -214,7 +225,7 @@ const globeData = computed(() => {
       x: point[0],
       y: point[1],
       offsetX: 0,
-      offsetY: -16,
+      offsetY: isMobile.value ? -12 : -16,
       visible,
       isEdge,
       online: isAnyOnline,
@@ -223,36 +234,36 @@ const globeData = computed(() => {
     });
   }
 
-  // 阶梯式防重叠错开
+  // 移动端/桌面端弹性避让排布
   const visibleNodes = nodes.filter((n) => n.visible);
   visibleNodes.sort((a, b) => a.x - b.x);
 
+  const collideDist = isMobile.value ? 30 : 44;
   for (let i = 0; i < visibleNodes.length; i++) {
     const a = visibleNodes[i];
     let collisionCount = 0;
     for (let j = 0; j < i; j++) {
       const b = visibleNodes[j];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
-      if (dist < 42) {
+      if (dist < collideDist) {
         collisionCount++;
       }
     }
     if (collisionCount > 0) {
       const pattern = collisionCount % 3;
       if (pattern === 1) {
-        a.offsetY = 16;
+        a.offsetY = isMobile.value ? 14 : 18;
         a.offsetX = -6;
       } else if (pattern === 2) {
-        a.offsetY = -28;
-        a.offsetX = 8;
+        a.offsetY = isMobile.value ? -22 : -28;
+        a.offsetX = 6;
       } else {
-        a.offsetY = -12;
-        a.offsetX = 28;
+        a.offsetY = -10;
+        a.offsetX = isMobile.value ? 22 : 30;
       }
     }
   }
 
-  // 中心 Hub 优先中国/香港/美西
   let hub = nodes.find((n) => ["US", "CN", "HK", "TW"].includes(n.code) && n.online && n.visible);
   if (!hub && nodes.length > 0) hub = nodes.find((n) => n.visible) || nodes[0];
 
@@ -275,7 +286,8 @@ const globeData = computed(() => {
       const nx = -dy / d;
       const ny = dx / d;
 
-      const archHeight = Math.min(75, Math.max(25, d * 0.22));
+      const maxArch = isMobile.value ? 55 : 85;
+      const archHeight = Math.min(maxArch, Math.max(20, d * 0.22));
       const mx = midX + nx * archHeight;
       const my = midY + ny * archHeight;
 
@@ -290,6 +302,7 @@ const globeData = computed(() => {
   return { nodes, lines, hub };
 });
 
+/* ---------------- 鼠标交互 ---------------- */
 function onMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   isDragging.value = true;
@@ -302,7 +315,7 @@ function onMouseMove(e: MouseEvent) {
   if (!isDragging.value) return;
   const dx = e.clientX - startX.value;
   const dy = e.clientY - startY.value;
-  const sens = 0.35 / zoom.value;
+  const sens = (isMobile.value ? 0.45 : 0.35) / zoom.value;
   rotation.value = [
     startRot.value[0] + dx * sens,
     Math.max(-80, Math.min(80, startRot.value[1] - dy * sens)),
@@ -316,7 +329,36 @@ function onMouseUp() {
 function onWheel(e: WheelEvent) {
   e.preventDefault();
   const factor = e.deltaY < 0 ? 1.15 : 0.85;
-  zoom.value = Math.min(Math.max(zoom.value * factor, 0.8), 3.5);
+  zoom.value = Math.min(Math.max(zoom.value * factor, 0.75), 3.5);
+}
+
+/* ---------------- 手机移动端 Touch 触控支持 ---------------- */
+function onTouchStart(e: TouchEvent) {
+  if (e.touches.length === 1) {
+    isDragging.value = true;
+    startX.value = e.touches[0].clientX;
+    startY.value = e.touches[0].clientY;
+    startRot.value = [...rotation.value];
+  }
+}
+
+function onTouchMove(e: TouchEvent) {
+  if (!isDragging.value || e.touches.length !== 1) return;
+  const dx = e.touches[0].clientX - startX.value;
+  const dy = e.touches[0].clientY - startY.value;
+  // 横向滑动大于纵向时阻止页面原生滚动，优先旋转地球
+  if (Math.abs(dx) > Math.abs(dy)) {
+    e.preventDefault();
+  }
+  const sens = 0.45 / zoom.value;
+  rotation.value = [
+    startRot.value[0] + dx * sens,
+    Math.max(-80, Math.min(80, startRot.value[1] - dy * sens)),
+  ];
+}
+
+function onTouchEnd() {
+  isDragging.value = false;
 }
 
 function resetView() {
@@ -324,23 +366,46 @@ function resetView() {
   rotation.value = [-105, -30];
 }
 
+/* ---------------- 悬浮弹窗 ---------------- */
 const tooltip = ref<{ x: number; y: number; node: GlobeNode } | null>(null);
-function showTooltip(node: GlobeNode, event: MouseEvent) {
+function showTooltip(node: GlobeNode, event: MouseEvent | TouchEvent) {
   const container = (event.currentTarget as HTMLElement).closest(".globe-panel");
   if (!container) return;
   const rect = container.getBoundingClientRect();
+  const clientX = "touches" in event ? event.touches[0].clientX : event.clientX;
+  const clientY = "touches" in event ? event.touches[0].clientY : event.clientY;
+
   tooltip.value = {
-    x: Math.min(rect.width - 320, event.clientX - rect.left + 12),
-    y: event.clientY - rect.top + 12,
+    x: Math.min(rect.width - (isMobile.value ? 240 : 320), clientX - rect.left + 12),
+    y: clientY - rect.top + 12,
     node,
   };
 }
+
 function hideTooltip() {
   tooltip.value = null;
 }
 
 function openServer(id: number) {
   router.push(`/server/${id}`);
+}
+
+/* ---------------- 动态全屏与手机分辨率探测 ---------------- */
+function updateDimensions() {
+  if (!containerRef.value) return;
+  const rect = containerRef.value.getBoundingClientRect();
+  const screenW = window.innerWidth;
+  // 彻底打破 960px 宽度限制，手机屏有多宽就占多宽
+  const w = Math.floor(rect.width || screenW);
+  width.value = w;
+
+  if (w < 640) {
+    // 手机端：高度设定在 390px ~ 460px 之间，保证小屏幕下协调饱满
+    height.value = Math.min(460, Math.max(380, Math.floor(window.innerHeight * 0.52)));
+  } else {
+    // 桌面宽屏：自适应高度
+    height.value = Math.max(580, Math.min(820, Math.floor(window.innerHeight * 0.72)));
+  }
 }
 
 onMounted(async () => {
@@ -362,6 +427,16 @@ onMounted(async () => {
       atlas.objects.countries as never,
     );
 
+    updateDimensions();
+
+    if (containerRef.value) {
+      resizeObserver = new ResizeObserver(() => {
+        updateDimensions();
+      });
+      resizeObserver.observe(containerRef.value);
+    }
+    window.addEventListener("resize", updateDimensions);
+
     ready.value = true;
 
     autoRotateTimer = window.setInterval(() => {
@@ -377,11 +452,14 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (autoRotateTimer) clearInterval(autoRotateTimer);
+  if (resizeObserver) resizeObserver.disconnect();
+  window.removeEventListener("resize", updateDimensions);
 });
 </script>
 
 <template>
   <div
+    ref="containerRef"
     class="globe-panel panel"
     @mouseleave="hideTooltip(); isHovering = false"
     @mouseenter="isHovering = true"
@@ -400,7 +478,9 @@ onUnmounted(() => {
         <span class="chip">
           <i class="dot dot--offline" /> 离线 {{ items.filter((i) => !i.online).length }}
         </span>
-        <span class="chip hint">滚轮缩放 · 拖拽自转</span>
+        <span class="chip hint">
+          {{ isMobile ? '单指滑动 360° 旋转' : '滚轮缩放 · 拖拽自转' }}
+        </span>
         <button type="button" class="chip reset-btn" @click="resetView">复位中心</button>
       </div>
 
@@ -410,16 +490,18 @@ onUnmounted(() => {
         @mousedown="onMouseDown"
         @mousemove="onMouseMove"
         @mouseup="onMouseUp"
+        @touchstart="onTouchStart"
+        @touchmove="onTouchMove"
+        @touchend="onTouchEnd"
       >
-        <div class="globe-stage" :style="{ width: `${WIDTH}px`, height: `${HEIGHT}px` }">
+        <div class="globe-stage" :style="{ width: '100%', height: `${height}px` }">
           <svg
-            :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
+            :viewBox="`0 0 ${width} ${height}`"
             preserveAspectRatio="xMidYMid meet"
             role="img"
             aria-label="3D全球监控拓扑"
           >
             <defs>
-              <!-- 真实深海钴蓝球体渐变与大气发光 -->
               <radialGradient id="oceanGrad" cx="45%" cy="40%" r="65%">
                 <stop offset="0%" stop-color="#1d4ed8" stop-opacity="0.85" />
                 <stop offset="55%" stop-color="#0f2b5c" stop-opacity="0.95" />
@@ -427,7 +509,6 @@ onUnmounted(() => {
                 <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.7" />
               </radialGradient>
 
-              <!-- 外太空环晕 -->
               <radialGradient id="haloGrad" cx="50%" cy="50%" r="50%">
                 <stop offset="90%" stop-color="transparent" />
                 <stop offset="97%" stop-color="#38bdf8" stop-opacity="0.2" />
@@ -435,23 +516,23 @@ onUnmounted(() => {
               </radialGradient>
             </defs>
 
-            <!-- 1. 外层柔和大气漫反射 -->
+            <!-- 1. 外层大气晕环 -->
             <circle
-              :cx="WIDTH / 2"
-              :cy="HEIGHT / 2"
-              :r="BASE_RADIUS * zoom * 1.04"
+              :cx="width / 2"
+              :cy="height / 2"
+              :r="baseRadius * zoom * 1.04"
               fill="url(#haloGrad)"
               pointer-events="none"
             />
 
             <!-- 2. 蔚蓝海洋底球 -->
             <circle
-              :cx="WIDTH / 2"
-              :cy="HEIGHT / 2"
-              :r="BASE_RADIUS * zoom"
+              :cx="width / 2"
+              :cy="height / 2"
+              :r="baseRadius * zoom"
               fill="url(#oceanGrad)"
               stroke="rgba(56, 189, 248, 0.55)"
-              :stroke-width="1.8"
+              :stroke-width="isMobile ? 1.2 : 1.8"
             />
 
             <!-- 3. 科技经纬网格线 -->
@@ -474,6 +555,7 @@ onUnmounted(() => {
                 text-anchor="middle"
                 dominant-baseline="central"
                 class="base-geo-text"
+                :style="{ fontSize: isMobile ? '8.5px' : '11px' }"
               >
                 {{ label.name }}
               </text>
@@ -487,15 +569,15 @@ onUnmounted(() => {
                 :d="line.pathD"
                 fill="none"
                 :stroke="line.color"
-                :stroke-width="1.8"
+                :stroke-width="isMobile ? 1.3 : 1.8"
                 stroke-linecap="round"
                 stroke-dasharray="8 4"
                 class="flowing-arc"
-                :style="{ filter: `drop-shadow(0 0 5px ${line.color})` }"
+                :style="{ filter: `drop-shadow(0 0 4px ${line.color})` }"
               />
             </g>
 
-            <!-- 7. 核心节点发光点 -->
+            <!-- 7. 核心节点光点 -->
             <g class="globe-dots">
               <g
                 v-for="node in globeData.nodes"
@@ -511,16 +593,16 @@ onUnmounted(() => {
                   :fill="node.color"
                   :cx="node.x"
                   :cy="node.y"
-                  :r="5.5"
+                  :r="isMobile ? 4.2 : 5.5"
                 />
                 <circle
                   class="node-dot"
                   :fill="node.color"
                   stroke="#ffffff"
-                  stroke-width="1.2px"
+                  :stroke-width="isMobile ? '0.8px' : '1.2px'"
                   :cx="node.x"
                   :cy="node.y"
-                  :r="3.2"
+                  :r="isMobile ? 2.5 : 3.2"
                 />
               </g>
             </g>
@@ -533,14 +615,14 @@ onUnmounted(() => {
               :key="`lbl-${node.id}`"
               v-show="node.visible"
               class="clear-city-tag"
-              :class="{ 'is-edge': node.isEdge }"
+              :class="{ 'is-edge': node.isEdge, 'is-mobile': isMobile }"
               :style="{
-                left: `${(node.x / WIDTH) * 100}%`,
-                top: `${(node.y / HEIGHT) * 100}%`,
+                left: `${(node.x / width) * 100}%`,
+                top: `${(node.y / height) * 100}%`,
                 transform: `translate(calc(-50% + ${node.offsetX}px), calc(-50% + ${node.offsetY}px))`,
                 color: node.color,
                 borderColor: node.color,
-                boxShadow: `0 0 12px color-mix(in srgb, ${node.color} 35%, transparent), 0 3px 8px rgba(0,0,0,0.6)`,
+                boxShadow: `0 0 10px color-mix(in srgb, ${node.color} 30%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
               }"
               @mouseenter="showTooltip(node, $event)"
               @mousemove="showTooltip(node, $event)"
@@ -556,6 +638,7 @@ onUnmounted(() => {
       <div
         v-if="tooltip"
         class="globe-tooltip"
+        :class="{ 'is-mobile-tip': isMobile }"
         :style="{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }"
       >
         <div class="tooltip-head">
@@ -589,19 +672,22 @@ onUnmounted(() => {
 <style scoped>
 .globe-panel {
   position: relative;
-  padding: 16px;
+  width: 100%;
+  padding: 14px;
   background: radial-gradient(circle at 50% 50%, rgba(13, 22, 44, 0.7) 0%, rgba(5, 10, 24, 0.96) 100%);
   border-radius: 12px;
   overflow: hidden;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .globe-viewport {
   cursor: grab;
+  width: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  width: 100%;
+  touch-action: pan-y; /* 允许在不需要横向拖地球时平滑竖向滚动网页 */
 }
 
 .globe-viewport:active {
@@ -610,8 +696,8 @@ onUnmounted(() => {
 
 .globe-stage {
   position: relative;
-  max-width: 100%;
-  aspect-ratio: 960 / 580;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .globe-stage svg {
@@ -620,14 +706,12 @@ onUnmounted(() => {
   display: block;
 }
 
-/* 经纬度网格线 */
 .globe-graticule path {
   fill: none;
   stroke: rgba(56, 189, 248, 0.12);
   stroke-width: 0.5;
 }
 
-/* 晶石冷青绿陆地 */
 .globe-land path {
   fill: #162a3b;
   stroke: #2dd4bf;
@@ -641,12 +725,10 @@ onUnmounted(() => {
   stroke-opacity: 0.4;
 }
 
-/* 常驻底图文字 */
 .base-geo-text {
   fill: rgba(224, 242, 254, 0.35);
-  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   pointer-events: none;
   user-select: none;
 }
@@ -655,7 +737,6 @@ onUnmounted(() => {
   fill: rgba(15, 23, 42, 0.45);
 }
 
-/* 飞线流动动效 */
 .flowing-arc {
   animation: arcPulse 1.4s linear infinite;
 }
@@ -684,7 +765,7 @@ onUnmounted(() => {
     opacity: 0.75;
   }
   100% {
-    r: 10;
+    r: 9;
     opacity: 0;
   }
 }
@@ -697,10 +778,10 @@ onUnmounted(() => {
 
 .clear-city-tag {
   position: absolute;
-  padding: 2.5px 7px;
+  padding: 3px 8px;
   background: rgba(10, 20, 38, 0.92);
   border-radius: 4px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
@@ -714,8 +795,15 @@ onUnmounted(() => {
   transition: transform 0.2s ease, background 0.15s ease;
 }
 
+/* 手机移动端专门减小胶囊字体，防止遮挡 */
+.clear-city-tag.is-mobile {
+  font-size: 9.5px;
+  padding: 1.5px 5px;
+  border-radius: 3px;
+}
+
 .clear-city-tag.is-edge {
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
 .clear-city-tag:hover {
@@ -737,13 +825,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 
 .globe-legend .hint {
-  font-size: 11.5px;
-  opacity: 0.6;
+  font-size: 11px;
+  opacity: 0.65;
 }
 
 .reset-btn {
@@ -756,72 +844,80 @@ onUnmounted(() => {
 .globe-tooltip {
   position: absolute;
   z-index: 60;
-  min-width: 250px;
-  padding: 12px 14px;
-  border-radius: 10px;
+  min-width: 240px;
+  padding: 10px 12px;
+  border-radius: 8px;
   border: 1px solid var(--border-strong);
   background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(14px);
   pointer-events: none;
+}
+
+.globe-tooltip.is-mobile-tip {
+  min-width: 210px;
+  padding: 8px 10px;
 }
 
 .tooltip-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
 .head-left {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .country-flag-img {
-  width: 18px;
-  height: 13px;
+  width: 16px;
+  height: 12px;
   border-radius: 2px;
   object-fit: cover;
 }
 
 .country-name {
   font-weight: 650;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .country-code {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-faint);
 }
 
 .node-status.is-online {
   color: #10b981;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .node-status.is-offline {
   color: #ef4444;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .server-title {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 550;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .meta-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
+  gap: 7px;
+  font-size: 10.5px;
   color: var(--text-faint);
 }
 
