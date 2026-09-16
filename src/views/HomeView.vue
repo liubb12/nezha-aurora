@@ -54,11 +54,13 @@ const loading = computed(() => !state.receivedOnce && !state.siteError);
     </div>
 
     <template v-else>
-      <OverviewStats />
+      <!-- 地图模式下隐藏 5 个汇总数据卡片 -->
+      <OverviewStats v-show="view !== 'map'" />
 
-      <FilterBar />
+      <!-- 地图模式下隐藏搜索筛选栏 -->
+      <FilterBar v-show="view !== 'map'" />
 
-      <section class="home-toolbar">
+      <section class="home-toolbar" :class="{ 'is-map-toolbar': view === 'map' }">
         <div class="seg">
           <button
             type="button"
@@ -104,9 +106,15 @@ const loading = computed(() => !state.receivedOnce && !state.siteError);
   align-items: center;
   gap: 8px;
   margin-top: 16px;
+  transition: margin-top 0.2s ease;
+}
+
+/* 地图模式下紧凑顶部间距，让地球整体上移吸顶 */
+.home-toolbar.is-map-toolbar {
+  margin-top: 4px;
 }
 
 .extra-body {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 </style>
