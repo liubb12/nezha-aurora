@@ -13,19 +13,19 @@ const router = useRouter();
 
 const stageRef = ref<HTMLElement | null>(null);
 const width = ref(1200);
-const height = ref(680);
+const height = ref(760);
 
 const ready = ref(false);
 const failed = ref(false);
 
 const isMobile = computed(() => width.value < 640);
 
-/** 球体半径：自适应宽度与高度 */
+/** 球体半径：放大系数，让地球仪在宽屏上充盈饱满 */
 const baseRadius = computed(() => {
   if (isMobile.value) {
     return Math.min(width.value * 0.44, height.value * 0.44);
   }
-  return Math.min(width.value * 0.35, height.value * 0.42);
+  return Math.min(width.value * 0.42, height.value * 0.46);
 });
 
 /** 缩放与旋转参数 */
@@ -389,9 +389,10 @@ function refreshDimensions() {
   width.value = clientWidth;
 
   if (clientWidth < 640) {
-    height.value = Math.min(460, Math.max(380, Math.floor(window.innerHeight * 0.52)));
+    height.value = Math.min(480, Math.max(380, Math.floor(window.innerHeight * 0.55)));
   } else {
-    height.value = Math.min(820, Math.max(620, Math.floor(window.innerHeight * 0.72)));
+    // 提升宽屏下的高度上限至 880px，充分展现实体球感
+    height.value = Math.min(880, Math.max(680, Math.floor(window.innerHeight * 0.78)));
   }
 }
 
@@ -660,7 +661,7 @@ onUnmounted(() => {
 <style scoped>
 .globe-panel {
   position: relative;
-  /* 强行突破父容器 max-width 限制，横向全景拉满 */
+  /* 强制拉满视口全屏跨度 */
   width: 100vw !important;
   max-width: 100vw !important;
   margin-left: calc(-50vw + 50%) !important;
