@@ -13,19 +13,20 @@ const router = useRouter();
 
 const stageRef = ref<HTMLElement | null>(null);
 const width = ref(1200);
-const height = ref(760);
+const height = ref(720);
 
 const ready = ref(false);
 const failed = ref(false);
 
 const isMobile = computed(() => width.value < 640);
 
-/** 球体半径：放大系数，让地球仪在宽屏上充盈饱满 */
+/** 球体半径：基于计算后的精准高度自适应最大化展现 */
 const baseRadius = computed(() => {
   if (isMobile.value) {
     return Math.min(width.value * 0.44, height.value * 0.44);
   }
-  return Math.min(width.value * 0.42, height.value * 0.46);
+  // 电脑大屏：自适应高度填满，留出少量晕环边距
+  return Math.min(width.value * 0.45, height.value * 0.46);
 });
 
 /** 缩放与旋转参数 */
@@ -382,7 +383,7 @@ function openServer(id: number) {
   router.push(`/server/${id}`);
 }
 
-/* ---------------- 动态全量精准尺寸重算 ---------------- */
+/* ---------------- 精准满屏高度计算（扣除顶部导航和底部版权） ---------------- */
 function refreshDimensions() {
   if (!stageRef.value) return;
   const clientWidth = stageRef.value.clientWidth || window.innerWidth;
@@ -391,8 +392,9 @@ function refreshDimensions() {
   if (clientWidth < 640) {
     height.value = Math.min(480, Math.max(380, Math.floor(window.innerHeight * 0.55)));
   } else {
-    // 提升宽屏下的高度上限至 880px，充分展现实体球感
-    height.value = Math.min(880, Math.max(680, Math.floor(window.innerHeight * 0.78)));
+    // 窗口高度减去顶栏(约60px)、工具栏(约45px)、底部版权(约50px)以及内边距
+    const fitHeight = window.innerHeight - 175;
+    height.value = Math.max(560, fitHeight);
   }
 }
 
@@ -661,12 +663,11 @@ onUnmounted(() => {
 <style scoped>
 .globe-panel {
   position: relative;
-  /* 强制拉满视口全屏跨度 */
   width: 100vw !important;
   max-width: 100vw !important;
   margin-left: calc(-50vw + 50%) !important;
   margin-right: calc(-50vw + 50%) !important;
-  padding: 16px 24px;
+  padding: 10px 24px 4px 24px;
   background: radial-gradient(circle at 50% 50%, rgba(13, 22, 44, 0.7) 0%, rgba(5, 10, 24, 0.96) 100%);
   border-radius: 0;
   overflow: hidden;
@@ -676,7 +677,7 @@ onUnmounted(() => {
 
 @media (max-width: 640px) {
   .globe-panel {
-    padding: 12px 8px;
+    padding: 10px 8px 4px 8px;
   }
 }
 
@@ -817,7 +818,7 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .globe-legend .hint {
