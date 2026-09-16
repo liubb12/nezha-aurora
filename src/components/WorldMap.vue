@@ -33,6 +33,23 @@ let d3Geo: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rawGeoFeatures: any = null;
 
+/** 地理常驻中文底图标签（无论有无机器，均常驻印在地球陆地上） */
+const BASE_GEO_LABELS = [
+  { name: "中国", lng: 104.1954, lat: 35.8617 },
+  { name: "俄罗斯", lng: 105.3188, lat: 61.524 },
+  { name: "蒙古", lng: 103.8467, lat: 46.8625 },
+  { name: "哈萨克斯坦", lng: 66.9237, lat: 48.0196 },
+  { name: "印度", lng: 78.9629, lat: 20.5937 },
+  { name: "澳大利亚", lng: 133.7751, lat: -25.2744 },
+  { name: "加拿大", lng: -106.3468, lat: 56.1304 },
+  { name: "美国", lng: -95.7129, lat: 37.0902 },
+  { name: "巴西", lng: -51.9253, lat: -14.235 },
+  { name: "阿根廷", lng: -63.6167, lat: -38.4161 },
+  { name: "南非", lng: 22.9375, lat: -30.5595 },
+  { name: "沙特阿拉伯", lng: 45.0792, lat: 23.8859 },
+  { name: "印度尼西亚", lng: 113.9213, lat: -0.7893 },
+];
+
 const projection = computed(() => {
   if (!d3Geo) return null;
   return d3Geo
@@ -77,23 +94,56 @@ interface GlobeNode {
   raw: PreparedServer;
 }
 
+interface GeoLabel {
+  name: string;
+  x: number;
+  y: number;
+  visible: boolean;
+}
+
 interface ArcLine {
   id: string;
   pathD: string;
   color: string;
 }
 
-/** 炫彩调色盘（高饱和度发光色） */
+/** 炫彩调色盘 */
 const COLOR_PALETTE = [
-  "#38bdf8", // 荧光青蓝
-  "#f97316", // 珊瑚亮橙
-  "#a855f7", // 霓虹亮紫
-  "#10b981", // 薄荷翠绿
-  "#fbbf24", // 琥珀金黄
-  "#f43f5e", // 鲜艳玫红
-  "#06b6d4", // 极光碧青
-  "#e879f9", // 炫动亮粉
+  "#38bdf8",
+  "#f97316",
+  "#a855f7",
+  "#10b981",
+  "#fbbf24",
+  "#f43f5e",
+  "#06b6d4",
+  "#e879f9",
 ];
+
+/** 常驻地理背景文字计算 */
+const geoLabels = computed<GeoLabel[]>(() => {
+  const proj = projection.value;
+  if (!ready.value || !proj || !d3Geo) return [];
+
+  const rot = rotation.value;
+  const result: GeoLabel[] = [];
+
+  for (const item of BASE_GEO_LABELS) {
+    const coords: [number, number] = [item.lng, item.lat];
+    const point = proj(coords);
+    if (!point) continue;
+
+    const distance = d3Geo.geoDistance(coords, [-rot[0], -rot[1]]);
+    if (distance < (Math.PI / 2) * 0.85) {
+      result.push({
+        name: item.name,
+        x: point[0],
+        y: point[1],
+        visible: true,
+      });
+    }
+  }
+  return result;
+});
 
 const globeData = computed(() => {
   const proj = projection.value;
@@ -127,7 +177,6 @@ const globeData = computed(() => {
     const isEdge = distance > (Math.PI / 2) * 0.9;
 
     const isAnyOnline = entries.some((e) => e.online);
-    // 离线给警示红，在线分配炫彩色
     const assignedColor = isAnyOnline
       ? COLOR_PALETTE[colorCounter % COLOR_PALETTE.length]
       : "#ef4444";
@@ -312,7 +361,7 @@ onUnmounted(() => {
               </radialGradient>
             </defs>
 
-            <!-- 球体底色 -->
+            <!-- 1. 球体底色 -->
             <circle
               :cx="WIDTH / 2"
               :cy="HEIGHT / 2"
@@ -322,12 +371,27 @@ onUnmounted(() => {
               :stroke-width="1.5"
             />
 
-            <!-- 陆地板块 -->
+            <!-- 2. 陆地板块 -->
             <g class="globe-land">
               <path :d="currentLandPath" />
             </g>
 
-            <!-- 多彩流动飞线 -->
+            <!-- 3. 常驻地理中文底图文字（印在板块上） -->
+            <g class="globe-base-labels">
+              <text
+                v-for="label in geoLabels"
+                :key="label.name"
+                :x="label.x"
+                :y="label.y"
+                text-anchor="middle"
+                dominant-baseline="central"
+                class="base-geo-text"
+              >
+                {{ label.name }}
+              </text>
+            </g>
+
+            <!-- 4. 多彩流动飞线 -->
             <g class="globe-lines">
               <path
                 v-for="line in globeData.lines"
@@ -343,7 +407,7 @@ onUnmounted(() => {
               />
             </g>
 
-            <!-- 核心节点光点 -->
+            <!-- 5. 核心节点光点 -->
             <g class="globe-dots">
               <g
                 v-for="node in globeData.nodes"
@@ -354,7 +418,6 @@ onUnmounted(() => {
                 @mousemove="showTooltip(node, $event)"
                 @click.stop="openServer(node.id)"
               >
-                <!-- 呼吸光晕（与线条颜色一致） -->
                 <circle
                   class="node-halo"
                   :fill="node.color"
@@ -362,7 +425,6 @@ onUnmounted(() => {
                   :cy="node.y"
                   :r="5.5"
                 />
-                <!-- 核心实心点 -->
                 <circle
                   class="node-dot"
                   :fill="node.color"
@@ -376,7 +438,7 @@ onUnmounted(() => {
             </g>
           </svg>
 
-          <!-- 炫彩清晰文字标签层 -->
+          <!-- 6. 机器节点彩色卡片胶囊 -->
           <div class="html-labels-layer">
             <div
               v-for="node in globeData.nodes"
@@ -480,6 +542,20 @@ onUnmounted(() => {
   stroke: #94a3b8;
 }
 
+/* 常驻印在陆地上的地理名称样式 */
+.base-geo-text {
+  fill: rgba(255, 255, 255, 0.28);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  pointer-events: none;
+  user-select: none;
+}
+
+:global([data-theme="light"]) .base-geo-text {
+  fill: rgba(15, 23, 42, 0.35);
+}
+
 .flowing-arc {
   animation: arcPulse 1.3s linear infinite;
 }
@@ -513,7 +589,6 @@ onUnmounted(() => {
   }
 }
 
-/* 炫彩高清文字标签 */
 .html-labels-layer {
   position: absolute;
   inset: 0;
@@ -524,7 +599,7 @@ onUnmounted(() => {
   position: absolute;
   transform: translate(-50%, -150%);
   padding: 3px 8px;
-  background: rgba(15, 23, 42, 0.88); /* 深空磨砂底色，衬托亮色字体 */
+  background: rgba(15, 23, 42, 0.88);
   border-radius: 5px;
   font-size: 11px;
   font-weight: 700;
