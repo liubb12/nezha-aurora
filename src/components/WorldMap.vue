@@ -13,7 +13,7 @@ const router = useRouter();
 
 const stageRef = ref<HTMLElement | null>(null);
 const width = ref(1200);
-const height = ref(640);
+const height = ref(680);
 
 const ready = ref(false);
 const failed = ref(false);
@@ -25,7 +25,7 @@ const baseRadius = computed(() => {
   if (isMobile.value) {
     return Math.min(width.value * 0.44, height.value * 0.44);
   }
-  return Math.min(width.value * 0.36, height.value * 0.42);
+  return Math.min(width.value * 0.35, height.value * 0.42);
 });
 
 /** 缩放与旋转参数 */
@@ -391,7 +391,7 @@ function refreshDimensions() {
   if (clientWidth < 640) {
     height.value = Math.min(460, Math.max(380, Math.floor(window.innerHeight * 0.52)));
   } else {
-    height.value = Math.min(760, Math.max(580, Math.floor(window.innerHeight * 0.68)));
+    height.value = Math.min(820, Math.max(620, Math.floor(window.innerHeight * 0.72)));
   }
 }
 
@@ -660,19 +660,29 @@ onUnmounted(() => {
 <style scoped>
 .globe-panel {
   position: relative;
-  width: 100%;
-  padding: 16px;
+  /* 强行突破父容器 max-width 限制，横向全景拉满 */
+  width: 100vw !important;
+  max-width: 100vw !important;
+  margin-left: calc(-50vw + 50%) !important;
+  margin-right: calc(-50vw + 50%) !important;
+  padding: 16px 24px;
   background: radial-gradient(circle at 50% 50%, rgba(13, 22, 44, 0.7) 0%, rgba(5, 10, 24, 0.96) 100%);
-  border-radius: 14px;
+  border-radius: 0;
   overflow: hidden;
   user-select: none;
   box-sizing: border-box;
 }
 
+@media (max-width: 640px) {
+  .globe-panel {
+    padding: 12px 8px;
+  }
+}
+
 .globe-viewport {
   position: relative;
   cursor: grab;
-  width: 100% !important; /* 彻底撑满大屏宽幅 */
+  width: 100% !important;
   display: block;
   touch-action: pan-y;
 }
