@@ -33,7 +33,7 @@ let d3Geo: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rawGeoFeatures: any = null;
 
-/** 地理常驻中文底图标签 */
+/** 常驻地理背景底图文字 */
 const BASE_GEO_LABELS = [
   { name: "中国", lng: 104.1954, lat: 35.8617, code: "CN" },
   { name: "俄罗斯", lng: 105.3188, lat: 61.524, code: "RU" },
@@ -107,6 +107,8 @@ interface ArcLine {
   id: string;
   pathD: string;
   color: string;
+  midX: number;
+  midY: number;
 }
 
 const COLOR_PALETTE = [
@@ -129,7 +131,6 @@ const activeCountryCodes = computed(() => {
   return codes;
 });
 
-/** 常驻地理底图标签（去除已有节点的重影） */
 const geoLabels = computed<GeoLabel[]>(() => {
   const proj = projection.value;
   if (!ready.value || !proj || !d3Geo) return [];
@@ -138,7 +139,6 @@ const geoLabels = computed<GeoLabel[]>(() => {
   const result: GeoLabel[] = [];
 
   for (const item of BASE_GEO_LABELS) {
-    // 若当前国家已有真实探针节点，则不显示底图文字
     if (activeCountryCodes.value.has(item.code)) continue;
 
     const coords: [number, number] = [item.lng, item.lat];
@@ -187,7 +187,7 @@ const globeData = computed(() => {
 
     const distance = d3Geo.geoDistance(coords, [-rot[0], -rot[1]]);
     const visible = distance < Math.PI / 2;
-    const isEdge = distance > (Math.PI / 2) * 0.9;
+    const isEdge = distance > (Math.PI / 2) * 0.92;
 
     const isAnyOnline = entries.some((e) => e.online);
     const assignedColor = isAnyOnline
@@ -204,7 +204,7 @@ const globeData = computed(() => {
       x: point[0],
       y: point[1],
       offsetX: 0,
-      offsetY: -15, // 默认居上
+      offsetY: -16,
       visible,
       isEdge,
       online: isAnyOnline,
@@ -213,31 +213,38 @@ const globeData = computed(() => {
     });
   }
 
-  // 节点标签防碰撞算法：相近的节点自动分散至上/下/左/右
+  // 辐射阶梯避让：对密集区域进行多角度错开
   const visibleNodes = nodes.filter((n) => n.visible);
+  visibleNodes.sort((a, b) => a.x - b.x); // 按水平顺序扫描
+
   for (let i = 0; i < visibleNodes.length; i++) {
-    for (let j = i + 1; j < visibleNodes.length; j++) {
-      const a = visibleNodes[i];
+    const a = visibleNodes[i];
+    let collisionCount = 0;
+    for (let j = 0; j < i; j++) {
       const b = visibleNodes[j];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
-
-      if (dist < 38) {
-        // 两点过近时，按上下位置错开
-        if (a.y <= b.y) {
-          a.offsetY = -22;
-          b.offsetY = 16;
-          b.offsetX = 8;
-        } else {
-          a.offsetY = 16;
-          a.offsetX = 8;
-          b.offsetY = -22;
-        }
+      if (dist < 42) {
+        collisionCount++;
+      }
+    }
+    if (collisionCount > 0) {
+      // 阶梯式错位：交错上下排布与水平位移
+      const pattern = collisionCount % 3;
+      if (pattern === 1) {
+        a.offsetY = 16;
+        a.offsetX = -6;
+      } else if (pattern === 2) {
+        a.offsetY = -28;
+        a.offsetX = 8;
+      } else {
+        a.offsetY = -12;
+        a.offsetX = 28;
       }
     }
   }
 
-  // 设定 Hub 中心
-  let hub = nodes.find((n) => ["CN", "HK", "TW", "US"].includes(n.code) && n.online && n.visible);
+  // 中心 Hub 选定
+  let hub = nodes.find((n) => ["US", "CN", "HK", "TW"].includes(n.code) && n.online && n.visible);
   if (!hub && nodes.length > 0) hub = nodes.find((n) => n.visible) || nodes[0];
 
   const lines: ArcLine[] = [];
@@ -254,25 +261,25 @@ const globeData = computed(() => {
       const dy = ey - sy;
       const d = Math.hypot(dx, dy);
 
-      // 立体穹顶中点计算：朝球心反方向向上隆起
+      // 立体法向量拱起穹顶
       const midX = (sx + ex) / 2;
       const midY = (sy + ey) / 2;
-      const cx = WIDTH / 2;
-      const cy = HEIGHT / 2;
 
-      // 径向向外微隆起
-      const radialX = midX - cx;
-      const radialY = midY - cy;
-      const rLen = Math.hypot(radialX, radialY) || 1;
+      // 计算两点垂直法向量
+      const nx = -dy / d;
+      const ny = dx / d;
 
-      const archHeight = Math.min(65, d * 0.26);
-      const mx = midX + (radialX / rLen) * archHeight;
-      const my = midY + (radialY / rLen) * archHeight;
+      // 拱高动态根据距离计算，避免欧洲同向直挤
+      const archHeight = Math.min(75, Math.max(25, d * 0.22));
+      const mx = midX + nx * archHeight;
+      const my = midY + ny * archHeight;
 
       lines.push({
         id: `${hub.id}-${node.id}`,
         pathD: `M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`,
         color: node.color,
+        midX: mx,
+        midY: my,
       });
     }
   }
@@ -414,7 +421,7 @@ onUnmounted(() => {
               </radialGradient>
             </defs>
 
-            <!-- 1. 球体底色 -->
+            <!-- 1. 背景球体与高光大气圈 -->
             <circle
               :cx="WIDTH / 2"
               :cy="HEIGHT / 2"
@@ -429,7 +436,7 @@ onUnmounted(() => {
               <path :d="currentLandPath" />
             </g>
 
-            <!-- 3. 常驻地理中文底图文字 -->
+            <!-- 3. 常驻地理底图文字 -->
             <g class="globe-base-labels">
               <text
                 v-for="label in geoLabels"
@@ -444,7 +451,7 @@ onUnmounted(() => {
               </text>
             </g>
 
-            <!-- 4. 多彩动态流动飞线 -->
+            <!-- 4. 绚丽立体弧形飞线 -->
             <g class="globe-lines">
               <path
                 v-for="line in globeData.lines"
@@ -456,7 +463,7 @@ onUnmounted(() => {
                 stroke-linecap="round"
                 stroke-dasharray="7 4"
                 class="flowing-arc"
-                :style="{ filter: `drop-shadow(0 0 3px ${line.color})` }"
+                :style="{ filter: `drop-shadow(0 0 4px ${line.color})` }"
               />
             </g>
 
@@ -491,7 +498,7 @@ onUnmounted(() => {
             </g>
           </svg>
 
-          <!-- 6. 机器节点彩色卡片胶囊（内置防重叠位移） -->
+          <!-- 6. 机器节点彩色卡片胶囊（扇形错位排布） -->
           <div class="html-labels-layer">
             <div
               v-for="node in globeData.nodes"
@@ -505,7 +512,7 @@ onUnmounted(() => {
                 transform: `translate(calc(-50% + ${node.offsetX}px), calc(-50% + ${node.offsetY}px))`,
                 color: node.color,
                 borderColor: node.color,
-                boxShadow: `0 0 8px color-mix(in srgb, ${node.color} 30%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
+                boxShadow: `0 0 10px color-mix(in srgb, ${node.color} 30%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
               }"
               @mouseenter="showTooltip(node, $event)"
               @mousemove="showTooltip(node, $event)"
@@ -597,7 +604,7 @@ onUnmounted(() => {
 }
 
 .base-geo-text {
-  fill: rgba(255, 255, 255, 0.25);
+  fill: rgba(255, 255, 255, 0.22);
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 1px;
@@ -610,7 +617,7 @@ onUnmounted(() => {
 }
 
 .flowing-arc {
-  animation: arcPulse 1.3s linear infinite;
+  animation: arcPulse 1.4s linear infinite;
 }
 
 @keyframes arcPulse {
@@ -651,7 +658,7 @@ onUnmounted(() => {
 .clear-city-tag {
   position: absolute;
   padding: 2.5px 7px;
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(15, 23, 42, 0.92);
   border-radius: 4px;
   font-size: 10.5px;
   font-weight: 700;
@@ -664,16 +671,16 @@ onUnmounted(() => {
   backdrop-filter: blur(8px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: transform 0.18s ease-out, background 0.15s ease;
+  transition: transform 0.2s ease, background 0.15s ease;
 }
 
 .clear-city-tag.is-edge {
-  opacity: 0.65;
+  opacity: 0.6;
 }
 
 .clear-city-tag:hover {
   background: rgba(30, 41, 59, 0.98);
-  z-index: 10;
+  z-index: 20;
 }
 
 .globe-state {
