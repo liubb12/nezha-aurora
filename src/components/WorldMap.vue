@@ -20,7 +20,7 @@ const failed = ref(false);
 
 /** 缩放与旋转参数 */
 const zoom = ref(1);
-const rotation = ref<[number, number]>([-105, -30]); // 默认正面对准亚太/欧亚
+const rotation = ref<[number, number]>([-105, -30]);
 const isDragging = ref(false);
 const startX = ref(0);
 const startY = ref(0);
@@ -33,7 +33,6 @@ let d3Geo: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rawGeoFeatures: any = null;
 
-/** 动态计算当前投影器（随旋转和缩放实时变化） */
 const projection = computed(() => {
   if (!d3Geo) return null;
   return d3Geo
@@ -44,14 +43,12 @@ const projection = computed(() => {
     .rotate(rotation.value);
 });
 
-/** 实时计算陆地轮廓 Path 字符串 */
 const currentLandPath = computed(() => {
   if (!projection.value || !rawGeoFeatures || !d3Geo) return "";
   const pathGenerator = d3Geo.geoPath(projection.value);
   return pathGenerator(rawGeoFeatures) || "";
 });
 
-/** 国家代码转中文名称 */
 const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 function getCountryName(code: string): string {
   try {
@@ -75,6 +72,8 @@ interface GlobeNode {
   y: number;
   visible: boolean;
   online: boolean;
+  isEdge: boolean;
+  color: string;
   raw: PreparedServer;
 }
 
@@ -84,7 +83,18 @@ interface ArcLine {
   color: string;
 }
 
-/** 实时解析球体表面节点与飞线 */
+/** 炫彩调色盘（高饱和度发光色） */
+const COLOR_PALETTE = [
+  "#38bdf8", // 荧光青蓝
+  "#f97316", // 珊瑚亮橙
+  "#a855f7", // 霓虹亮紫
+  "#10b981", // 薄荷翠绿
+  "#fbbf24", // 琥珀金黄
+  "#f43f5e", // 鲜艳玫红
+  "#06b6d4", // 极光碧青
+  "#e879f9", // 炫动亮粉
+];
+
 const globeData = computed(() => {
   const proj = projection.value;
   if (!ready.value || !proj || !d3Geo) {
@@ -94,7 +104,6 @@ const globeData = computed(() => {
   const nodes: GlobeNode[] = [];
   const rot = rotation.value;
 
-  // 聚合去重：按国家归类
   const grouped = new Map<string, PreparedServer[]>();
   for (const item of props.items) {
     const code = (item.server.country_code || "").trim().toUpperCase();
@@ -104,6 +113,7 @@ const globeData = computed(() => {
     else grouped.set(code, [item]);
   }
 
+  let colorCounter = 0;
   for (const [code, entries] of grouped) {
     const centroid = centroidOf(code);
     if (!centroid) continue;
@@ -112,9 +122,16 @@ const globeData = computed(() => {
     const point = proj(coords);
     if (!point) continue;
 
-    // 正背面剔除判断
     const distance = d3Geo.geoDistance(coords, [-rot[0], -rot[1]]);
     const visible = distance < Math.PI / 2;
+    const isEdge = distance > (Math.PI / 2) * 0.9;
+
+    const isAnyOnline = entries.some((e) => e.online);
+    // 离线给警示红，在线分配炫彩色
+    const assignedColor = isAnyOnline
+      ? COLOR_PALETTE[colorCounter % COLOR_PALETTE.length]
+      : "#ef4444";
+    colorCounter++;
 
     const rep = entries[0];
     nodes.push({
@@ -125,12 +142,13 @@ const globeData = computed(() => {
       x: point[0],
       y: point[1],
       visible,
-      online: entries.some((e) => e.online),
+      isEdge,
+      online: isAnyOnline,
+      color: assignedColor,
       raw: rep,
     });
   }
 
-  // 设定 Hub 中心（优先中国/香港，没有则按在线节点首位）
   let hub = nodes.find((n) => ["CN", "HK", "TW", "US"].includes(n.code) && n.online && n.visible);
   if (!hub && nodes.length > 0) hub = nodes.find((n) => n.visible) || nodes[0];
 
@@ -146,13 +164,13 @@ const globeData = computed(() => {
 
       const dx = ex - sx;
       const dy = ey - sy;
-      const mx = (sx + ex) / 2 - dy * 0.22;
-      const my = (sy + ey) / 2 + dx * 0.22;
+      const mx = (sx + ex) / 2 - dy * 0.24;
+      const my = (sy + ey) / 2 + dx * 0.24;
 
       lines.push({
         id: `${hub.id}-${node.id}`,
         pathD: `M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`,
-        color: node.online ? "rgba(56, 189, 248, 0.85)" : "rgba(248, 113, 113, 0.6)",
+        color: node.color,
       });
     }
   }
@@ -160,7 +178,6 @@ const globeData = computed(() => {
   return { nodes, lines, hub };
 });
 
-/** 鼠标交互：拖拽与滚轮 */
 function onMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   isDragging.value = true;
@@ -195,7 +212,6 @@ function resetView() {
   rotation.value = [-105, -30];
 }
 
-/** 弹窗提示 */
 const tooltip = ref<{ x: number; y: number; node: GlobeNode } | null>(null);
 function showTooltip(node: GlobeNode, event: MouseEvent) {
   const container = (event.currentTarget as HTMLElement).closest(".globe-panel");
@@ -234,7 +250,6 @@ onMounted(async () => {
 
     ready.value = true;
 
-    // 平滑自转动画
     autoRotateTimer = window.setInterval(() => {
       if (!isDragging.value && !isHovering.value) {
         rotation.value = [rotation.value[0] + 0.18, rotation.value[1]];
@@ -271,7 +286,7 @@ onUnmounted(() => {
         <span class="chip">
           <i class="dot dot--offline" /> 离线 {{ items.filter((i) => !i.online).length }}
         </span>
-        <span class="chip hint">滚轮放大缩小 · 左键拖拽 360° 自转</span>
+        <span class="chip hint">滚轮缩放 · 拖拽自转</span>
         <button type="button" class="chip reset-btn" @click="resetView">复位中心</button>
       </div>
 
@@ -282,94 +297,108 @@ onUnmounted(() => {
         @mousemove="onMouseMove"
         @mouseup="onMouseUp"
       >
-        <svg
-          :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
-          preserveAspectRatio="xMidYMid meet"
-          role="img"
-          aria-label="3D全球监控拓扑"
-        >
-          <defs>
-            <radialGradient id="globeGrad" cx="50%" cy="50%" r="50%">
-              <stop offset="60%" stop-color="#141f36" />
-              <stop offset="90%" stop-color="#0b1220" />
-              <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.3" />
-            </radialGradient>
-          </defs>
+        <div class="globe-stage" :style="{ width: `${WIDTH}px`, height: `${HEIGHT}px` }">
+          <svg
+            :viewBox="`0 0 ${WIDTH} ${HEIGHT}`"
+            preserveAspectRatio="xMidYMid meet"
+            role="img"
+            aria-label="3D全球监控拓扑"
+          >
+            <defs>
+              <radialGradient id="globeGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="60%" stop-color="#141f36" />
+                <stop offset="90%" stop-color="#0b1220" />
+                <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.3" />
+              </radialGradient>
+            </defs>
 
-          <!-- 1. 背景球体 -->
-          <circle
-            :cx="WIDTH / 2"
-            :cy="HEIGHT / 2"
-            :r="BASE_RADIUS * zoom"
-            fill="url(#globeGrad)"
-            stroke="rgba(56, 189, 248, 0.4)"
-            :stroke-width="1.5"
-          />
-
-          <!-- 2. 实时重绘的大陆板块 -->
-          <g class="globe-land">
-            <path :d="currentLandPath" />
-          </g>
-
-          <!-- 3. 动态流动飞线 -->
-          <g class="globe-lines">
-            <path
-              v-for="line in globeData.lines"
-              :key="line.id"
-              :d="line.pathD"
-              fill="none"
-              :stroke="line.color"
-              :stroke-width="1.4"
-              stroke-linecap="round"
-              stroke-dasharray="6 3"
-              class="flowing-arc"
+            <!-- 球体底色 -->
+            <circle
+              :cx="WIDTH / 2"
+              :cy="HEIGHT / 2"
+              :r="BASE_RADIUS * zoom"
+              fill="url(#globeGrad)"
+              stroke="rgba(56, 189, 248, 0.4)"
+              :stroke-width="1.5"
             />
-          </g>
 
-          <!-- 4. 节点与中文标签 -->
-          <g class="globe-nodes">
-            <g
+            <!-- 陆地板块 -->
+            <g class="globe-land">
+              <path :d="currentLandPath" />
+            </g>
+
+            <!-- 多彩流动飞线 -->
+            <g class="globe-lines">
+              <path
+                v-for="line in globeData.lines"
+                :key="line.id"
+                :d="line.pathD"
+                fill="none"
+                :stroke="line.color"
+                :stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-dasharray="7 4"
+                class="flowing-arc"
+                :style="{ filter: `drop-shadow(0 0 3px ${line.color})` }"
+              />
+            </g>
+
+            <!-- 核心节点光点 -->
+            <g class="globe-dots">
+              <g
+                v-for="node in globeData.nodes"
+                :key="node.id"
+                v-show="node.visible"
+                class="dot-group"
+                @mouseenter="showTooltip(node, $event)"
+                @mousemove="showTooltip(node, $event)"
+                @click.stop="openServer(node.id)"
+              >
+                <!-- 呼吸光晕（与线条颜色一致） -->
+                <circle
+                  class="node-halo"
+                  :fill="node.color"
+                  :cx="node.x"
+                  :cy="node.y"
+                  :r="5.5"
+                />
+                <!-- 核心实心点 -->
+                <circle
+                  class="node-dot"
+                  :fill="node.color"
+                  stroke="#ffffff"
+                  stroke-width="1px"
+                  :cx="node.x"
+                  :cy="node.y"
+                  :r="3.2"
+                />
+              </g>
+            </g>
+          </svg>
+
+          <!-- 炫彩清晰文字标签层 -->
+          <div class="html-labels-layer">
+            <div
               v-for="node in globeData.nodes"
-              :key="node.id"
+              :key="`lbl-${node.id}`"
               v-show="node.visible"
-              class="globe-node"
+              class="clear-city-tag"
+              :class="{ 'is-edge': node.isEdge }"
+              :style="{
+                left: `${(node.x / WIDTH) * 100}%`,
+                top: `${(node.y / HEIGHT) * 100}%`,
+                color: node.color,
+                borderColor: node.color,
+                boxShadow: `0 0 10px color-mix(in srgb, ${node.color} 35%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
+              }"
               @mouseenter="showTooltip(node, $event)"
               @mousemove="showTooltip(node, $event)"
               @click.stop="openServer(node.id)"
             >
-              <circle
-                class="node-halo"
-                :class="node.online ? 'is-online' : 'is-offline'"
-                :cx="node.x"
-                :cy="node.y"
-                :r="5"
-              />
-              <circle
-                class="node-dot"
-                :class="node.online ? 'is-online' : 'is-offline'"
-                :cx="node.x"
-                :cy="node.y"
-                :r="3"
-              />
-
-              <!-- 悬浮胶囊中文标签 -->
-              <g class="node-tag" :transform="`translate(${node.x}, ${node.y - 10})`">
-                <rect
-                  rx="3"
-                  ry="3"
-                  x="-20"
-                  y="-9"
-                  width="40"
-                  height="14"
-                  class="tag-rect"
-                />
-                <text class="tag-label" y="1" text-anchor="middle" dominant-baseline="central">
-                  {{ node.displayName }}
-                </text>
-              </g>
-            </g>
-          </g>
-        </svg>
+              {{ node.displayName }}
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 悬浮弹窗 -->
@@ -381,7 +410,9 @@ onUnmounted(() => {
         <div class="tooltip-head">
           <div class="head-left">
             <img class="country-flag-img" :src="getFlagUrl(tooltip.node.code)" :alt="tooltip.node.code" />
-            <span class="country-name">{{ tooltip.node.displayName }}</span>
+            <span class="country-name" :style="{ color: tooltip.node.color }">
+              {{ tooltip.node.displayName }}
+            </span>
             <span class="country-code">({{ tooltip.node.code }})</span>
           </div>
           <span class="node-status" :class="tooltip.node.online ? 'is-online' : 'is-offline'">
@@ -419,24 +450,29 @@ onUnmounted(() => {
   display: flex;
   justify-content: center;
   align-items: center;
+  width: 100%;
 }
 
 .globe-viewport:active {
   cursor: grabbing;
 }
 
-.globe-viewport svg {
+.globe-stage {
+  position: relative;
+  max-width: 100%;
+  aspect-ratio: 960 / 580;
+}
+
+.globe-stage svg {
   width: 100%;
-  max-height: 580px;
+  height: 100%;
   display: block;
 }
 
-/* 陆地板块 */
 .globe-land path {
   fill: #273549;
   stroke: #3b4d66;
   stroke-width: 0.6;
-  transition: d 0.05s linear;
 }
 
 :global([data-theme="light"]) .globe-land path {
@@ -444,86 +480,74 @@ onUnmounted(() => {
   stroke: #94a3b8;
 }
 
-/* 飞线流动动画 */
 .flowing-arc {
-  animation: arcPulse 1.2s linear infinite;
+  animation: arcPulse 1.3s linear infinite;
 }
 
 @keyframes arcPulse {
   from {
-    stroke-dashoffset: 18;
+    stroke-dashoffset: 22;
   }
   to {
     stroke-dashoffset: 0;
   }
 }
 
-/* 节点 */
-.globe-node {
+.dot-group {
   cursor: pointer;
 }
 
-.node-dot.is-online {
-  fill: #38bdf8;
-  stroke: #ffffff;
-  stroke-width: 1px;
-}
-
-.node-dot.is-offline {
-  fill: #ef4444;
-  stroke: #ffffff;
-  stroke-width: 1px;
-}
-
 .node-halo {
-  opacity: 0.4;
-}
-
-.node-halo.is-online {
-  fill: #38bdf8;
+  opacity: 0.45;
   animation: haloAnim 2s infinite ease-out;
-}
-
-.node-halo.is-offline {
-  fill: #ef4444;
 }
 
 @keyframes haloAnim {
   0% {
     r: 3;
-    opacity: 0.6;
+    opacity: 0.7;
   }
   100% {
-    r: 9;
+    r: 10;
     opacity: 0;
   }
 }
 
-/* 中文胶囊标签 */
-.node-tag {
+/* 炫彩高清文字标签 */
+.html-labels-layer {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
-  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
 }
 
-.tag-rect {
-  fill: rgba(255, 255, 255, 0.95);
-  stroke: rgba(203, 213, 225, 0.8);
-  stroke-width: 0.5;
+.clear-city-tag {
+  position: absolute;
+  transform: translate(-50%, -150%);
+  padding: 3px 8px;
+  background: rgba(15, 23, 42, 0.88); /* 深空磨砂底色，衬托亮色字体 */
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  border-width: 1px;
+  border-style: solid;
+  pointer-events: auto;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: transform 0.15s ease, background 0.15s ease;
 }
 
-:global([data-theme="dark"]) .tag-rect {
-  fill: rgba(30, 41, 59, 0.92);
-  stroke: rgba(71, 85, 105, 0.8);
+.clear-city-tag.is-edge {
+  opacity: 0.65;
+  transform: translate(-50%, -120%) scale(0.9);
 }
 
-.tag-label {
-  fill: #0f172a;
-  font-size: 9px;
-  font-weight: 600;
-}
-
-:global([data-theme="dark"]) .tag-label {
-  fill: #f8fafc;
+.clear-city-tag:hover {
+  transform: translate(-50%, -160%) scale(1.08);
+  background: rgba(30, 41, 59, 0.98);
 }
 
 .globe-state {
