@@ -33,21 +33,21 @@ let d3Geo: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rawGeoFeatures: any = null;
 
-/** 地理常驻中文底图标签（无论有无机器，均常驻印在地球陆地上） */
+/** 地理常驻中文底图标签 */
 const BASE_GEO_LABELS = [
-  { name: "中国", lng: 104.1954, lat: 35.8617 },
-  { name: "俄罗斯", lng: 105.3188, lat: 61.524 },
-  { name: "蒙古", lng: 103.8467, lat: 46.8625 },
-  { name: "哈萨克斯坦", lng: 66.9237, lat: 48.0196 },
-  { name: "印度", lng: 78.9629, lat: 20.5937 },
-  { name: "澳大利亚", lng: 133.7751, lat: -25.2744 },
-  { name: "加拿大", lng: -106.3468, lat: 56.1304 },
-  { name: "美国", lng: -95.7129, lat: 37.0902 },
-  { name: "巴西", lng: -51.9253, lat: -14.235 },
-  { name: "阿根廷", lng: -63.6167, lat: -38.4161 },
-  { name: "南非", lng: 22.9375, lat: -30.5595 },
-  { name: "沙特阿拉伯", lng: 45.0792, lat: 23.8859 },
-  { name: "印度尼西亚", lng: 113.9213, lat: -0.7893 },
+  { name: "中国", lng: 104.1954, lat: 35.8617, code: "CN" },
+  { name: "俄罗斯", lng: 105.3188, lat: 61.524, code: "RU" },
+  { name: "蒙古", lng: 103.8467, lat: 46.8625, code: "MN" },
+  { name: "哈萨克斯坦", lng: 66.9237, lat: 48.0196, code: "KZ" },
+  { name: "印度", lng: 78.9629, lat: 20.5937, code: "IN" },
+  { name: "澳大利亚", lng: 133.7751, lat: -25.2744, code: "AU" },
+  { name: "加拿大", lng: -106.3468, lat: 56.1304, code: "CA" },
+  { name: "美国", lng: -95.7129, lat: 37.0902, code: "US" },
+  { name: "巴西", lng: -51.9253, lat: -14.235, code: "BR" },
+  { name: "阿根廷", lng: -63.6167, lat: -38.4161, code: "AR" },
+  { name: "南非", lng: 22.9375, lat: -30.5595, code: "ZA" },
+  { name: "沙特阿拉伯", lng: 45.0792, lat: 23.8859, code: "SA" },
+  { name: "印度尼西亚", lng: 113.9213, lat: -0.7893, code: "ID" },
 ];
 
 const projection = computed(() => {
@@ -87,6 +87,8 @@ interface GlobeNode {
   displayName: string;
   x: number;
   y: number;
+  offsetX: number;
+  offsetY: number;
   visible: boolean;
   online: boolean;
   isEdge: boolean;
@@ -107,7 +109,6 @@ interface ArcLine {
   color: string;
 }
 
-/** 炫彩调色盘 */
 const COLOR_PALETTE = [
   "#38bdf8",
   "#f97316",
@@ -119,7 +120,16 @@ const COLOR_PALETTE = [
   "#e879f9",
 ];
 
-/** 常驻地理背景文字计算 */
+const activeCountryCodes = computed(() => {
+  const codes = new Set<string>();
+  for (const item of props.items) {
+    const code = (item.server.country_code || "").trim().toUpperCase();
+    if (code) codes.add(code);
+  }
+  return codes;
+});
+
+/** 常驻地理底图标签（去除已有节点的重影） */
 const geoLabels = computed<GeoLabel[]>(() => {
   const proj = projection.value;
   if (!ready.value || !proj || !d3Geo) return [];
@@ -128,6 +138,9 @@ const geoLabels = computed<GeoLabel[]>(() => {
   const result: GeoLabel[] = [];
 
   for (const item of BASE_GEO_LABELS) {
+    // 若当前国家已有真实探针节点，则不显示底图文字
+    if (activeCountryCodes.value.has(item.code)) continue;
+
     const coords: [number, number] = [item.lng, item.lat];
     const point = proj(coords);
     if (!point) continue;
@@ -190,6 +203,8 @@ const globeData = computed(() => {
       displayName: getCountryName(code),
       x: point[0],
       y: point[1],
+      offsetX: 0,
+      offsetY: -15, // 默认居上
       visible,
       isEdge,
       online: isAnyOnline,
@@ -198,6 +213,30 @@ const globeData = computed(() => {
     });
   }
 
+  // 节点标签防碰撞算法：相近的节点自动分散至上/下/左/右
+  const visibleNodes = nodes.filter((n) => n.visible);
+  for (let i = 0; i < visibleNodes.length; i++) {
+    for (let j = i + 1; j < visibleNodes.length; j++) {
+      const a = visibleNodes[i];
+      const b = visibleNodes[j];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+
+      if (dist < 38) {
+        // 两点过近时，按上下位置错开
+        if (a.y <= b.y) {
+          a.offsetY = -22;
+          b.offsetY = 16;
+          b.offsetX = 8;
+        } else {
+          a.offsetY = 16;
+          a.offsetX = 8;
+          b.offsetY = -22;
+        }
+      }
+    }
+  }
+
+  // 设定 Hub 中心
   let hub = nodes.find((n) => ["CN", "HK", "TW", "US"].includes(n.code) && n.online && n.visible);
   if (!hub && nodes.length > 0) hub = nodes.find((n) => n.visible) || nodes[0];
 
@@ -213,8 +252,22 @@ const globeData = computed(() => {
 
       const dx = ex - sx;
       const dy = ey - sy;
-      const mx = (sx + ex) / 2 - dy * 0.24;
-      const my = (sy + ey) / 2 + dx * 0.24;
+      const d = Math.hypot(dx, dy);
+
+      // 立体穹顶中点计算：朝球心反方向向上隆起
+      const midX = (sx + ex) / 2;
+      const midY = (sy + ey) / 2;
+      const cx = WIDTH / 2;
+      const cy = HEIGHT / 2;
+
+      // 径向向外微隆起
+      const radialX = midX - cx;
+      const radialY = midY - cy;
+      const rLen = Math.hypot(radialX, radialY) || 1;
+
+      const archHeight = Math.min(65, d * 0.26);
+      const mx = midX + (radialX / rLen) * archHeight;
+      const my = midY + (radialY / rLen) * archHeight;
 
       lines.push({
         id: `${hub.id}-${node.id}`,
@@ -376,7 +429,7 @@ onUnmounted(() => {
               <path :d="currentLandPath" />
             </g>
 
-            <!-- 3. 常驻地理中文底图文字（印在板块上） -->
+            <!-- 3. 常驻地理中文底图文字 -->
             <g class="globe-base-labels">
               <text
                 v-for="label in geoLabels"
@@ -391,7 +444,7 @@ onUnmounted(() => {
               </text>
             </g>
 
-            <!-- 4. 多彩流动飞线 -->
+            <!-- 4. 多彩动态流动飞线 -->
             <g class="globe-lines">
               <path
                 v-for="line in globeData.lines"
@@ -438,7 +491,7 @@ onUnmounted(() => {
             </g>
           </svg>
 
-          <!-- 6. 机器节点彩色卡片胶囊 -->
+          <!-- 6. 机器节点彩色卡片胶囊（内置防重叠位移） -->
           <div class="html-labels-layer">
             <div
               v-for="node in globeData.nodes"
@@ -449,9 +502,10 @@ onUnmounted(() => {
               :style="{
                 left: `${(node.x / WIDTH) * 100}%`,
                 top: `${(node.y / HEIGHT) * 100}%`,
+                transform: `translate(calc(-50% + ${node.offsetX}px), calc(-50% + ${node.offsetY}px))`,
                 color: node.color,
                 borderColor: node.color,
-                boxShadow: `0 0 10px color-mix(in srgb, ${node.color} 35%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
+                boxShadow: `0 0 8px color-mix(in srgb, ${node.color} 30%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
               }"
               @mouseenter="showTooltip(node, $event)"
               @mousemove="showTooltip(node, $event)"
@@ -542,9 +596,8 @@ onUnmounted(() => {
   stroke: #94a3b8;
 }
 
-/* 常驻印在陆地上的地理名称样式 */
 .base-geo-text {
-  fill: rgba(255, 255, 255, 0.28);
+  fill: rgba(255, 255, 255, 0.25);
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 1px;
@@ -597,11 +650,10 @@ onUnmounted(() => {
 
 .clear-city-tag {
   position: absolute;
-  transform: translate(-50%, -150%);
-  padding: 3px 8px;
-  background: rgba(15, 23, 42, 0.88);
-  border-radius: 5px;
-  font-size: 11px;
+  padding: 2.5px 7px;
+  background: rgba(15, 23, 42, 0.9);
+  border-radius: 4px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
@@ -612,17 +664,16 @@ onUnmounted(() => {
   backdrop-filter: blur(8px);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: transform 0.15s ease, background 0.15s ease;
+  transition: transform 0.18s ease-out, background 0.15s ease;
 }
 
 .clear-city-tag.is-edge {
   opacity: 0.65;
-  transform: translate(-50%, -120%) scale(0.9);
 }
 
 .clear-city-tag:hover {
-  transform: translate(-50%, -160%) scale(1.08);
   background: rgba(30, 41, 59, 0.98);
+  z-index: 10;
 }
 
 .globe-state {
