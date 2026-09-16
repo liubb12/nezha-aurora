@@ -32,6 +32,33 @@ let autoRotateTimer: number | null = null;
 let d3Geo: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rawGeoFeatures: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let graticuleGenerator: any = null;
+
+/** 3D 正射投影器 */
+const projection = computed(() => {
+  if (!d3Geo) return null;
+  return d3Geo
+    .geoOrthographic()
+    .scale(BASE_RADIUS * zoom.value)
+    .translate([WIDTH / 2, HEIGHT / 2])
+    .clipAngle(90)
+    .rotate(rotation.value);
+});
+
+/** 动态计算大陆轮廓 Path */
+const currentLandPath = computed(() => {
+  if (!projection.value || !rawGeoFeatures || !d3Geo) return "";
+  const pathGenerator = d3Geo.geoPath(projection.value);
+  return pathGenerator(rawGeoFeatures) || "";
+});
+
+/** 动态计算经纬度网格线 Path */
+const currentGraticulePath = computed(() => {
+  if (!projection.value || !graticuleGenerator || !d3Geo) return "";
+  const pathGenerator = d3Geo.geoPath(projection.value);
+  return pathGenerator(graticuleGenerator()) || "";
+});
 
 /** 常驻地理背景底图文字 */
 const BASE_GEO_LABELS = [
@@ -49,22 +76,6 @@ const BASE_GEO_LABELS = [
   { name: "沙特阿拉伯", lng: 45.0792, lat: 23.8859, code: "SA" },
   { name: "印度尼西亚", lng: 113.9213, lat: -0.7893, code: "ID" },
 ];
-
-const projection = computed(() => {
-  if (!d3Geo) return null;
-  return d3Geo
-    .geoOrthographic()
-    .scale(BASE_RADIUS * zoom.value)
-    .translate([WIDTH / 2, HEIGHT / 2])
-    .clipAngle(90)
-    .rotate(rotation.value);
-});
-
-const currentLandPath = computed(() => {
-  if (!projection.value || !rawGeoFeatures || !d3Geo) return "";
-  const pathGenerator = d3Geo.geoPath(projection.value);
-  return pathGenerator(rawGeoFeatures) || "";
-});
 
 const regionNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 function getCountryName(code: string): string {
@@ -107,19 +118,18 @@ interface ArcLine {
   id: string;
   pathD: string;
   color: string;
-  midX: number;
-  midY: number;
 }
 
+/** 炫彩流光配色表 */
 const COLOR_PALETTE = [
-  "#38bdf8",
-  "#f97316",
-  "#a855f7",
-  "#10b981",
-  "#fbbf24",
-  "#f43f5e",
-  "#06b6d4",
-  "#e879f9",
+  "#38bdf8", // 荧光青蓝
+  "#f97316", // 珊瑚亮橙
+  "#a855f7", // 霓虹亮紫
+  "#10b981", // 薄荷翠绿
+  "#fbbf24", // 琥珀金黄
+  "#f43f5e", // 鲜艳玫红
+  "#06b6d4", // 极光碧青
+  "#e879f9", // 炫动亮粉
 ];
 
 const activeCountryCodes = computed(() => {
@@ -213,9 +223,9 @@ const globeData = computed(() => {
     });
   }
 
-  // 辐射阶梯避让：对密集区域进行多角度错开
+  // 阶梯式防重叠错开
   const visibleNodes = nodes.filter((n) => n.visible);
-  visibleNodes.sort((a, b) => a.x - b.x); // 按水平顺序扫描
+  visibleNodes.sort((a, b) => a.x - b.x);
 
   for (let i = 0; i < visibleNodes.length; i++) {
     const a = visibleNodes[i];
@@ -228,7 +238,6 @@ const globeData = computed(() => {
       }
     }
     if (collisionCount > 0) {
-      // 阶梯式错位：交错上下排布与水平位移
       const pattern = collisionCount % 3;
       if (pattern === 1) {
         a.offsetY = 16;
@@ -243,7 +252,7 @@ const globeData = computed(() => {
     }
   }
 
-  // 中心 Hub 选定
+  // 中心 Hub 优先中国/香港/美西
   let hub = nodes.find((n) => ["US", "CN", "HK", "TW"].includes(n.code) && n.online && n.visible);
   if (!hub && nodes.length > 0) hub = nodes.find((n) => n.visible) || nodes[0];
 
@@ -261,15 +270,11 @@ const globeData = computed(() => {
       const dy = ey - sy;
       const d = Math.hypot(dx, dy);
 
-      // 立体法向量拱起穹顶
       const midX = (sx + ex) / 2;
       const midY = (sy + ey) / 2;
-
-      // 计算两点垂直法向量
       const nx = -dy / d;
       const ny = dx / d;
 
-      // 拱高动态根据距离计算，避免欧洲同向直挤
       const archHeight = Math.min(75, Math.max(25, d * 0.22));
       const mx = midX + nx * archHeight;
       const my = midY + ny * archHeight;
@@ -278,8 +283,6 @@ const globeData = computed(() => {
         id: `${hub.id}-${node.id}`,
         pathD: `M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`,
         color: node.color,
-        midX: mx,
-        midY: my,
       });
     }
   }
@@ -349,6 +352,8 @@ onMounted(async () => {
     ]);
 
     d3Geo = d3;
+    graticuleGenerator = d3.geoGraticule();
+
     const atlas = (atlasModule.default ?? atlasModule) as unknown as {
       objects: { countries: unknown };
     };
@@ -384,7 +389,7 @@ onUnmounted(() => {
     <div v-if="failed" class="globe-state">3D 地图组件加载失败。</div>
     <div v-else-if="!ready" class="globe-state">
       <span class="spinner" />
-      <span>正在构建 3D 网络拓扑…</span>
+      <span>正在构建 3D 蔚蓝科技地球…</span>
     </div>
 
     <template v-else>
@@ -414,29 +419,52 @@ onUnmounted(() => {
             aria-label="3D全球监控拓扑"
           >
             <defs>
-              <radialGradient id="globeGrad" cx="50%" cy="50%" r="50%">
-                <stop offset="60%" stop-color="#141f36" />
-                <stop offset="90%" stop-color="#0b1220" />
-                <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.3" />
+              <!-- 真实深海钴蓝球体渐变与大气发光 -->
+              <radialGradient id="oceanGrad" cx="45%" cy="40%" r="65%">
+                <stop offset="0%" stop-color="#1d4ed8" stop-opacity="0.85" />
+                <stop offset="55%" stop-color="#0f2b5c" stop-opacity="0.95" />
+                <stop offset="85%" stop-color="#07132b" />
+                <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.7" />
+              </radialGradient>
+
+              <!-- 外太空环晕 -->
+              <radialGradient id="haloGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="90%" stop-color="transparent" />
+                <stop offset="97%" stop-color="#38bdf8" stop-opacity="0.2" />
+                <stop offset="100%" stop-color="transparent" />
               </radialGradient>
             </defs>
 
-            <!-- 1. 背景球体与高光大气圈 -->
+            <!-- 1. 外层柔和大气漫反射 -->
+            <circle
+              :cx="WIDTH / 2"
+              :cy="HEIGHT / 2"
+              :r="BASE_RADIUS * zoom * 1.04"
+              fill="url(#haloGrad)"
+              pointer-events="none"
+            />
+
+            <!-- 2. 蔚蓝海洋底球 -->
             <circle
               :cx="WIDTH / 2"
               :cy="HEIGHT / 2"
               :r="BASE_RADIUS * zoom"
-              fill="url(#globeGrad)"
-              stroke="rgba(56, 189, 248, 0.4)"
-              :stroke-width="1.5"
+              fill="url(#oceanGrad)"
+              stroke="rgba(56, 189, 248, 0.55)"
+              :stroke-width="1.8"
             />
 
-            <!-- 2. 陆地板块 -->
+            <!-- 3. 科技经纬网格线 -->
+            <g class="globe-graticule">
+              <path :d="currentGraticulePath" />
+            </g>
+
+            <!-- 4. 晶石微青大陆板块 -->
             <g class="globe-land">
               <path :d="currentLandPath" />
             </g>
 
-            <!-- 3. 常驻地理底图文字 -->
+            <!-- 5. 常驻地理底图文字 -->
             <g class="globe-base-labels">
               <text
                 v-for="label in geoLabels"
@@ -451,7 +479,7 @@ onUnmounted(() => {
               </text>
             </g>
 
-            <!-- 4. 绚丽立体弧形飞线 -->
+            <!-- 6. 炫彩流动飞线 -->
             <g class="globe-lines">
               <path
                 v-for="line in globeData.lines"
@@ -459,15 +487,15 @@ onUnmounted(() => {
                 :d="line.pathD"
                 fill="none"
                 :stroke="line.color"
-                :stroke-width="1.6"
+                :stroke-width="1.8"
                 stroke-linecap="round"
-                stroke-dasharray="7 4"
+                stroke-dasharray="8 4"
                 class="flowing-arc"
-                :style="{ filter: `drop-shadow(0 0 4px ${line.color})` }"
+                :style="{ filter: `drop-shadow(0 0 5px ${line.color})` }"
               />
             </g>
 
-            <!-- 5. 核心节点光点 -->
+            <!-- 7. 核心节点发光点 -->
             <g class="globe-dots">
               <g
                 v-for="node in globeData.nodes"
@@ -489,7 +517,7 @@ onUnmounted(() => {
                   class="node-dot"
                   :fill="node.color"
                   stroke="#ffffff"
-                  stroke-width="1px"
+                  stroke-width="1.2px"
                   :cx="node.x"
                   :cy="node.y"
                   :r="3.2"
@@ -498,7 +526,7 @@ onUnmounted(() => {
             </g>
           </svg>
 
-          <!-- 6. 机器节点彩色卡片胶囊（扇形错位排布） -->
+          <!-- 8. 彩色服务器高清胶囊标签 -->
           <div class="html-labels-layer">
             <div
               v-for="node in globeData.nodes"
@@ -512,7 +540,7 @@ onUnmounted(() => {
                 transform: `translate(calc(-50% + ${node.offsetX}px), calc(-50% + ${node.offsetY}px))`,
                 color: node.color,
                 borderColor: node.color,
-                boxShadow: `0 0 10px color-mix(in srgb, ${node.color} 30%, transparent), 0 2px 6px rgba(0,0,0,0.6)`,
+                boxShadow: `0 0 12px color-mix(in srgb, ${node.color} 35%, transparent), 0 3px 8px rgba(0,0,0,0.6)`,
               }"
               @mouseenter="showTooltip(node, $event)"
               @mousemove="showTooltip(node, $event)"
@@ -562,7 +590,7 @@ onUnmounted(() => {
 .globe-panel {
   position: relative;
   padding: 16px;
-  background: radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.6) 0%, rgba(10, 15, 30, 0.95) 100%);
+  background: radial-gradient(circle at 50% 50%, rgba(13, 22, 44, 0.7) 0%, rgba(5, 10, 24, 0.96) 100%);
   border-radius: 12px;
   overflow: hidden;
   user-select: none;
@@ -592,37 +620,49 @@ onUnmounted(() => {
   display: block;
 }
 
+/* 经纬度网格线 */
+.globe-graticule path {
+  fill: none;
+  stroke: rgba(56, 189, 248, 0.12);
+  stroke-width: 0.5;
+}
+
+/* 晶石冷青绿陆地 */
 .globe-land path {
-  fill: #273549;
-  stroke: #3b4d66;
-  stroke-width: 0.6;
+  fill: #162a3b;
+  stroke: #2dd4bf;
+  stroke-width: 0.5;
+  stroke-opacity: 0.35;
 }
 
 :global([data-theme="light"]) .globe-land path {
   fill: #cbd5e1;
-  stroke: #94a3b8;
+  stroke: #0ea5e9;
+  stroke-opacity: 0.4;
 }
 
+/* 常驻底图文字 */
 .base-geo-text {
-  fill: rgba(255, 255, 255, 0.22);
+  fill: rgba(224, 242, 254, 0.35);
   font-size: 10.5px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 1px;
   pointer-events: none;
   user-select: none;
 }
 
 :global([data-theme="light"]) .base-geo-text {
-  fill: rgba(15, 23, 42, 0.35);
+  fill: rgba(15, 23, 42, 0.45);
 }
 
+/* 飞线流动动效 */
 .flowing-arc {
   animation: arcPulse 1.4s linear infinite;
 }
 
 @keyframes arcPulse {
   from {
-    stroke-dashoffset: 22;
+    stroke-dashoffset: 24;
   }
   to {
     stroke-dashoffset: 0;
@@ -634,14 +674,14 @@ onUnmounted(() => {
 }
 
 .node-halo {
-  opacity: 0.45;
+  opacity: 0.5;
   animation: haloAnim 2s infinite ease-out;
 }
 
 @keyframes haloAnim {
   0% {
     r: 3;
-    opacity: 0.7;
+    opacity: 0.75;
   }
   100% {
     r: 10;
@@ -658,7 +698,7 @@ onUnmounted(() => {
 .clear-city-tag {
   position: absolute;
   padding: 2.5px 7px;
-  background: rgba(15, 23, 42, 0.92);
+  background: rgba(10, 20, 38, 0.92);
   border-radius: 4px;
   font-size: 10.5px;
   font-weight: 700;
@@ -679,7 +719,7 @@ onUnmounted(() => {
 }
 
 .clear-city-tag:hover {
-  background: rgba(30, 41, 59, 0.98);
+  background: rgba(15, 32, 64, 0.98);
   z-index: 20;
 }
 
